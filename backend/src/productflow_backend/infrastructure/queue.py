@@ -11,7 +11,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from productflow_backend.config import get_runtime_settings, get_settings
-from productflow_backend.domain.enums import JobStatus, WorkflowNodeStatus, WorkflowRunStatus
+from productflow_backend.domain.durable_generation_tasks import (
+    IMAGE_SESSION_GENERATION_TASK_CONTRACT,
+    WORKFLOW_RUN_GENERATION_TASK_CONTRACT,
+)
+from productflow_backend.domain.enums import JobStatus, WorkflowNodeStatus
 from productflow_backend.infrastructure.db.models import (
     ImageSessionGenerationTask,
     WorkflowNode,
@@ -106,12 +110,14 @@ def recover_unfinished_workflow_runs(
             session.scalars(
                 select(WorkflowRun)
                 .options(selectinload(WorkflowRun.node_runs))
-                .where(WorkflowRun.status == WorkflowRunStatus.RUNNING)
+                .where(WorkflowRun.status.in_(WORKFLOW_RUN_GENERATION_TASK_CONTRACT.active_statuses))
             ).all()
         )
         for run in runs:
             running_node_runs = [
-                node_run for node_run in run.node_runs if node_run.status == WorkflowNodeStatus.RUNNING
+                node_run
+                for node_run in run.node_runs
+                if WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node_run.status)
             ]
             if running_node_runs:
                 stale_node_runs = [
@@ -124,7 +130,7 @@ def recover_unfinished_workflow_runs(
                 for node_run in stale_node_runs:
                     node_run.status = WorkflowNodeStatus.QUEUED
                     node = session.get(WorkflowNode, node_run.node_id)
-                    if node is not None and node.status == WorkflowNodeStatus.RUNNING:
+                    if node is not None and WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node.status):
                         node.status = WorkflowNodeStatus.QUEUED
                         node.failure_reason = None
                 run.failure_reason = None
@@ -132,10 +138,9 @@ def recover_unfinished_workflow_runs(
                 runs_to_enqueue.append(run.id)
                 continue
 
-            if any(node_run.status == WorkflowNodeStatus.QUEUED for node_run in run.node_runs) or (
-                run.node_runs
-                and all(node_run.status == WorkflowNodeStatus.SUCCEEDED for node_run in run.node_runs)
-            ):
+            if any(
+                WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(node_run.status) for node_run in run.node_runs
+            ) or (run.node_runs and all(node_run.status == WorkflowNodeStatus.SUCCEEDED for node_run in run.node_runs)):
                 queued_runs += 1
                 runs_to_enqueue.append(run.id)
 
@@ -194,9 +199,9 @@ def recover_unfinished_image_session_generation_tasks(
         statement = select(ImageSessionGenerationTask).where(
             ImageSessionGenerationTask.is_retryable.is_(True),
             or_(
-                ImageSessionGenerationTask.status == JobStatus.QUEUED,
+                ImageSessionGenerationTask.status.in_(IMAGE_SESSION_GENERATION_TASK_CONTRACT.queued_statuses),
                 (
-                    (ImageSessionGenerationTask.status == JobStatus.RUNNING)
+                    (ImageSessionGenerationTask.status.in_(IMAGE_SESSION_GENERATION_TASK_CONTRACT.running_statuses))
                     & (last_progress_at <= cutoff)
                 )
                 if reset_stale_running
@@ -205,7 +210,7 @@ def recover_unfinished_image_session_generation_tasks(
         )
         tasks = list(session.scalars(statement).all())
         for task in tasks:
-            if task.status == JobStatus.RUNNING:
+            if IMAGE_SESSION_GENERATION_TASK_CONTRACT.is_running(task.status):
                 if task.completed_candidates:
                     now = utcnow()
                     task.status = JobStatus.FAILED

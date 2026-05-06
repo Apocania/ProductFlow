@@ -49,6 +49,7 @@ from productflow_backend.application.product_workflow_query import WorkflowQuery
 from productflow_backend.application.queue_submission import enqueue_or_mark_failed
 from productflow_backend.application.time import now_utc
 from productflow_backend.config import get_runtime_settings
+from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import (
     CopyStatus,
     PosterKind,
@@ -145,18 +146,21 @@ def _active_workflow_run(workflow: ProductWorkflow) -> WorkflowRun | None:
         (
             run
             for run in sorted(workflow.runs, key=lambda item: item.started_at, reverse=True)
-            if run.status == WorkflowRunStatus.RUNNING
+            if WORKFLOW_RUN_GENERATION_TASK_CONTRACT.is_running(run.status)
         ),
         None,
     )
 
 
 def _workflow_run_should_enqueue(run: WorkflowRun) -> bool:
-    if run.status != WorkflowRunStatus.RUNNING:
+    if not WORKFLOW_RUN_GENERATION_TASK_CONTRACT.is_running(run.status):
         return False
-    if any(node_run.status == WorkflowNodeStatus.RUNNING for node_run in run.node_runs):
+    if any(WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node_run.status) for node_run in run.node_runs):
         return False
-    return any(node_run.status == WorkflowNodeStatus.QUEUED for node_run in run.node_runs) or (
+    has_queued_node_run = any(
+        WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(node_run.status) for node_run in run.node_runs
+    )
+    return has_queued_node_run or (
         bool(run.node_runs) and all(node_run.status == WorkflowNodeStatus.SUCCEEDED for node_run in run.node_runs)
     )
 
@@ -312,13 +316,13 @@ def _execute_product_workflow_run(
     run = session.get(WorkflowRun, run_id)
     if run is None:
         return
-    if run.status != WorkflowRunStatus.RUNNING:
+    if not WORKFLOW_RUN_GENERATION_TASK_CONTRACT.is_running(run.status):
         return
     workflow = queries.get_workflow_or_raise(run.workflow_id)
     ordered_nodes = product_workflow_graph.topological_nodes(workflow)
     run_node_ids = {node_run.node_id for node_run in run.node_runs}
     node_runs_by_node_id = {node_run.node_id: node_run for node_run in run.node_runs}
-    if any(node_run.status == WorkflowNodeStatus.RUNNING for node_run in run.node_runs):
+    if any(WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node_run.status) for node_run in run.node_runs):
         return
 
     for ordered_node in ordered_nodes:
@@ -329,9 +333,9 @@ def _execute_product_workflow_run(
         if node_run is None:
             continue
         session.refresh(node_run)
-        if node_run.status == WorkflowNodeStatus.RUNNING:
+        if WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node_run.status):
             return
-        if node_run.status != WorkflowNodeStatus.QUEUED:
+        if not WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(node_run.status):
             continue
         if not _claim_workflow_node_run(session, node_run_id=node_run.id, node_id=node.id):
             return
@@ -405,9 +409,9 @@ def _claim_workflow_node_run(session: Session, *, node_run_id: str, node_id: str
         update(WorkflowNodeRun)
         .where(
             WorkflowNodeRun.id == node_run_id,
-            WorkflowNodeRun.status == WorkflowNodeStatus.QUEUED,
+            WorkflowNodeRun.status == WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_queued_statuses[0],
         )
-        .values(status=WorkflowNodeStatus.RUNNING, started_at=now)
+        .values(status=WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_running_statuses[0], started_at=now)
     )
     if result.rowcount != 1:
         session.rollback()
@@ -442,7 +446,7 @@ def _mark_workflow_run_failed(
             node_run.status = WorkflowNodeStatus.FAILED
             node_run.failure_reason = reason
             node_run.finished_at = now
-        elif failed_node_id is None and node_run.status == WorkflowNodeStatus.RUNNING:
+        elif failed_node_id is None and WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node_run.status):
             failed_node = session.get(WorkflowNode, node_run.node_id)
             if failed_node is not None:
                 failed_node.status = WorkflowNodeStatus.FAILED
@@ -451,7 +455,7 @@ def _mark_workflow_run_failed(
             node_run.status = WorkflowNodeStatus.FAILED
             node_run.failure_reason = reason
             node_run.finished_at = now
-        elif node_run.status == WorkflowNodeStatus.QUEUED:
+        elif WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(node_run.status):
             skipped_node = session.get(WorkflowNode, node_run.node_id)
             if skipped_node is not None:
                 skipped_node.status = WorkflowNodeStatus.IDLE

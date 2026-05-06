@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from productflow_backend.application.image_sessions import ImageSessionStatusSnapshot
+from productflow_backend.domain.durable_generation_tasks import IMAGE_SESSION_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import ImageSessionAssetKind, JobStatus
 from productflow_backend.infrastructure.db.models import (
     ImageSession,
@@ -338,7 +339,7 @@ def serialize_image_session_status(snapshot: ImageSessionStatusSnapshot) -> Imag
         latest_round_id=snapshot.latest_round_id,
         latest_generation_group_id=snapshot.latest_generation_group_id,
         has_active_generation_task=any(
-            item.status in {JobStatus.QUEUED, JobStatus.RUNNING} for item in generation_tasks
+            IMAGE_SESSION_GENERATION_TASK_CONTRACT.is_active(item.status) for item in generation_tasks
         ),
         generation_tasks=[
             serialize_image_session_generation_task(

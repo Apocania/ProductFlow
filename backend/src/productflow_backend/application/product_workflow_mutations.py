@@ -16,11 +16,11 @@ from productflow_backend.application.product_workflow_context import _image_size
 from productflow_backend.application.time import now_utc
 from productflow_backend.application.use_cases import update_copy_set
 from productflow_backend.config import filter_image_tool_options
+from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import (
     SourceAssetKind,
     WorkflowNodeStatus,
     WorkflowNodeType,
-    WorkflowRunStatus,
 )
 from productflow_backend.domain.errors import BusinessValidationError, NotFoundError
 from productflow_backend.infrastructure.db.models import (
@@ -42,7 +42,7 @@ def _active_workflow_run(workflow: ProductWorkflow) -> WorkflowRun | None:
         (
             run
             for run in sorted(workflow.runs, key=lambda item: item.started_at, reverse=True)
-            if run.status == WorkflowRunStatus.RUNNING
+            if WORKFLOW_RUN_GENERATION_TASK_CONTRACT.is_active(run.status)
         ),
         None,
     )
@@ -378,10 +378,11 @@ def delete_workflow_edge(session: Session, *, edge_id: str) -> ProductWorkflow:
 def delete_workflow_node(session: Session, *, node_id: str) -> ProductWorkflow:
     node = product_workflow_graph.get_node_or_raise(session, node_id)
     workflow = product_workflow_graph.get_workflow_or_raise(session, node.workflow_id)
-    if _active_workflow_run(workflow) is not None or node.status in {
-        WorkflowNodeStatus.QUEUED,
-        WorkflowNodeStatus.RUNNING,
-    }:
+    if (
+        _active_workflow_run(workflow) is not None
+        or WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(node.status)
+        or WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(node.status)
+    ):
         raise ValueError("运行中，稍后删除")
 
     workflow_id = workflow.id

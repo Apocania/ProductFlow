@@ -7,11 +7,11 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from productflow_backend.application.time import now_utc
+from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import (
     CopyStatus,
     ProductWorkflowState,
     SourceAssetKind,
-    WorkflowRunStatus,
 )
 from productflow_backend.domain.errors import NotFoundError
 from productflow_backend.infrastructure.db.models import (
@@ -232,7 +232,10 @@ def delete_product(
     active_workflow_run = session.scalar(
         select(WorkflowRun)
         .join(ProductWorkflow, WorkflowRun.workflow_id == ProductWorkflow.id)
-        .where(ProductWorkflow.product_id == product_id, WorkflowRun.status == WorkflowRunStatus.RUNNING)
+        .where(
+            ProductWorkflow.product_id == product_id,
+            WorkflowRun.status.in_(WORKFLOW_RUN_GENERATION_TASK_CONTRACT.active_statuses),
+        )
     )
     if active_workflow_run is not None:
         raise ValueError("商品工作流运行中，稍后删除")

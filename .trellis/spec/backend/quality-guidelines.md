@@ -412,6 +412,127 @@ Durable task creation and workers are designed to avoid duplicate active work an
 
 Preserve these semantics when editing durable task code.
 
+### Scenario: Durable generation task contract
+
+#### 1. Scope / Trigger
+
+- Trigger: adding or changing any database-durable async path that creates provider-backed image/copy/poster generation
+  work, enqueues a Dramatiq message, runs in a worker, or exposes queued/running/failed state through a status API.
+- Existing members are intentionally separate business models:
+  - `WorkflowRun` plus `WorkflowNodeRun` for product workflow generation;
+  - `ImageSessionGenerationTask` for continuous image-session generation.
+- New work must extend or reference `domain/durable_generation_tasks.py` before adding a third state machine.
+
+#### 2. Signatures
+
+- Contract home: `domain/durable_generation_tasks.py`.
+- Shared enqueue boundary: `application/queue_submission.py::enqueue_or_mark_failed(...)`.
+- Shared admission gates:
+  - submit-time active cap: `application/admission.py::ensure_generation_capacity(...)`;
+  - worker-time running cap: `application/admission.py::generation_running_capacity_available(...)`.
+- Current contracts:
+  - `WORKFLOW_RUN_GENERATION_TASK_CONTRACT`;
+  - `IMAGE_SESSION_GENERATION_TASK_CONTRACT`.
+- Current worker actors:
+  - `workers.run_product_workflow_run(workflow_run_id: str)`;
+  - `workers.run_image_session_generation_task(task_id: str)`.
+
+#### 3. Contracts
+
+- Database rows are authoritative task state. Redis/Dramatiq messages are delivery attempts only.
+- A submit use case must create or reuse a durable row before enqueueing. If queue send fails after a durable row exists,
+  it must mark the row failed through the owning model's failure transition and raise `QueueUnavailableError` with
+  `任务队列暂不可用，请稍后重试`.
+- Worker actors must set `max_retries=0`; application execution entrypoints own failure persistence, retry counters,
+  partial-result handling, and terminal status.
+- Duplicate delivery must be idempotent. Terminal rows and already-running work must return without provider calls or new
+  artifacts. Claims must use a database conditional update for queued-to-running transitions where the model has an
+  explicit queued state.
+- Startup recovery must inspect durable DB state and then resend delivery only for queued or stale-running work according
+  to the model's recovery rules. API startup must not reset recent running work owned by another worker.
+- Generation capacity must use the shared DB-backed gates. Submit-time checks count active queued/running work; worker
+  claims count running work before entering provider execution.
+- Status snapshots and queue metadata must be derived from durable rows and first-class result rows, not Redis queue
+  length or in-process memory.
+
+#### 4. Validation & Error Matrix
+
+- Queue send failure after durable creation -> durable row is failed, API returns `503`,
+  `{"detail": "任务队列暂不可用，请稍后重试"}`.
+- Capacity reached before durable creation -> no new resource-consuming durable row, API returns `429`,
+  `{"detail": "当前生成任务较多，请稍后再试"}`.
+- Duplicate terminal message -> no-op, no provider call, no new artifact row.
+- Duplicate currently-running message -> no-op; stale-running recovery handles old abandoned work separately.
+- Recovery sees queued work -> resend delivery without changing product/provider semantics.
+- Recovery sees stale running work -> apply the owning model's documented stale behavior, then resend or fail as
+  appropriate.
+- Status refresh during generation -> response is reconstructed from DB rows and remains stable across process restart.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a new generation path adds a `DurableGenerationTaskContract`, calls `ensure_generation_capacity(...)` before
+  durable creation, submits through `enqueue_or_mark_failed(...)`, uses a `max_retries=0` actor, and adds recovery/status
+  tests.
+- Good: workflow run and image-session task continue using separate tables and business statuses while sharing contract
+  constants and checks for active/running/queued semantics.
+- Base: workflow run has no task-level queued status; its active run is `running`, while node runs hold queued/running
+  execution state. The contract should describe that split instead of forcing a new workflow table shape.
+- Bad: adding a new async provider path that creates a row and calls `actor.send(...)` directly without
+  `enqueue_or_mark_failed(...)`.
+- Bad: enabling Dramatiq automatic retries for generation actors.
+- Bad: computing queue position or active state from Redis delivery metadata.
+
+#### 6. Tests Required
+
+- Contract regression: current generation contracts still name distinct durable models and expose the expected
+  active/queued/running/terminal statuses.
+- Worker actor regression: all generation actors satisfy `actor.options["max_retries"] == 0` through the shared contract
+  assertion.
+- Enqueue failure regression: mocked send failure marks the durable row failed and returns stable `503`.
+- Duplicate-message regression for each durable model: terminal and currently-running messages do not call providers.
+- Recovery regression for each durable model: queued/stale-running DB rows are handled according to the owning recovery
+  rules.
+- Admission/status regression: active/running counts and status snapshots are derived from durable DB rows.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```python
+session.add(task)
+session.commit()
+run_new_generation_actor.send(task.id)
+```
+
+This can strand a queued durable row if Redis/Dramatiq delivery fails.
+
+Correct:
+
+```python
+task = create_durable_generation_task(session, ...)
+enqueue_or_mark_failed(
+    task.id,
+    enqueue=enqueue_generation_task,
+    mark_failed=lambda task_id, reason: mark_generation_task_enqueue_failed(session, task_id, reason),
+)
+```
+
+Wrong:
+
+```python
+@dramatiq.actor(max_retries=3)
+def run_generation_task(task_id: str) -> None:
+    execute_generation_task(task_id)
+```
+
+Correct:
+
+```python
+@dramatiq.actor(max_retries=0)
+def run_generation_task(task_id: str) -> None:
+    execute_generation_task(task_id)
+```
+
 #### Scenario: Durable async continuous image-session generation
 
 ##### 1. Scope / Trigger

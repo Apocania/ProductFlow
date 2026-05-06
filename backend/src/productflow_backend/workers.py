@@ -8,6 +8,11 @@ import dramatiq
 from productflow_backend.application.image_sessions import execute_image_session_generation_task
 from productflow_backend.application.product_workflows import execute_product_workflow_run
 from productflow_backend.config import get_runtime_settings
+from productflow_backend.domain.durable_generation_tasks import (
+    IMAGE_SESSION_GENERATION_TASK_CONTRACT,
+    WORKFLOW_RUN_GENERATION_TASK_CONTRACT,
+    assert_actor_uses_durable_generation_contract,
+)
 from productflow_backend.infrastructure.logging import cleanup_old_logs, configure_logging
 from productflow_backend.infrastructure.queue import (
     get_broker,
@@ -41,6 +46,13 @@ def run_product_workflow_run(workflow_run_id: str) -> None:
 def run_image_session_generation_task(task_id: str) -> None:
     """连续生图 worker：执行失败落库为通用安全错误。"""
     execute_image_session_generation_task(task_id)
+
+
+assert_actor_uses_durable_generation_contract(WORKFLOW_RUN_GENERATION_TASK_CONTRACT, run_product_workflow_run)
+assert_actor_uses_durable_generation_contract(
+    IMAGE_SESSION_GENERATION_TASK_CONTRACT,
+    run_image_session_generation_task,
+)
 
 
 def _running_under_dramatiq_cli() -> bool:

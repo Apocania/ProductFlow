@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import NoReturn
 
+from productflow_backend.domain.durable_generation_tasks import QUEUE_UNAVAILABLE_DETAIL
 from productflow_backend.domain.errors import QueueUnavailableError
-
-QUEUE_UNAVAILABLE_DETAIL = "任务队列暂不可用，请稍后重试"
 
 
 def enqueue_or_mark_failed(

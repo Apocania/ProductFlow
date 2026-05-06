@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from productflow_backend.application.product_workflow_graph import ProductWorkflowStatusSnapshot
 from productflow_backend.application.product_workflows import latest_workflow_runs
+from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import WorkflowNodeStatus, WorkflowNodeType, WorkflowRunStatus
 from productflow_backend.infrastructure.db.models import (
     ProductWorkflow,
@@ -266,8 +267,12 @@ def serialize_product_workflow_status(snapshot: ProductWorkflowStatusSnapshot) -
         product_id=workflow.product_id,
         title=workflow.title,
         active=workflow.active,
-        has_active_workflow=any(item.status == WorkflowRunStatus.RUNNING for item in snapshot.runs)
-        or any(item.status in {WorkflowNodeStatus.QUEUED, WorkflowNodeStatus.RUNNING} for item in nodes),
+        has_active_workflow=any(WORKFLOW_RUN_GENERATION_TASK_CONTRACT.is_active(item.status) for item in snapshot.runs)
+        or any(
+            WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_queued(item.status)
+            or WORKFLOW_RUN_GENERATION_TASK_CONTRACT.execution_is_running(item.status)
+            for item in nodes
+        ),
         nodes=[
             WorkflowNodeStatusResponse(
                 id=item.id,

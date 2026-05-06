@@ -145,9 +145,10 @@ values are mirrored in `web/src/lib/types.ts`, so enum changes are cross-layer c
 still belongs in `presentation/errors.py`.
 
 `backend/src/productflow_backend/domain/workflow_rules.py` owns DB-free workflow graph business rules such as topological
-ordering, selected-node execution planning, and missing-upstream decisions. Application modules adapt ORM rows into the
-small domain rule shapes before applying those rules; SQLAlchemy artifact existence checks stay in application/query
-services.
+ordering, selected-node execution planning, and missing-upstream decisions. `domain/durable_generation_tasks.py` owns the
+DB-free durable generation task contract shared by application submit/execution code, infrastructure queue recovery,
+presentation status serializers, and worker actor assertions. Application modules adapt ORM rows into the small domain
+rule/contract shapes before applying those rules; SQLAlchemy artifact existence checks stay in application/query services.
 
 ### Infrastructure layer
 

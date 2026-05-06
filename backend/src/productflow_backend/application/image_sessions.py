@@ -18,9 +18,13 @@ from productflow_backend.application.admission import (
     get_generation_task_queue_metadata,
     get_queued_generation_positions,
 )
-from productflow_backend.application.queue_submission import QUEUE_UNAVAILABLE_DETAIL, enqueue_or_mark_failed
+from productflow_backend.application.queue_submission import enqueue_or_mark_failed
 from productflow_backend.application.time import now_utc
 from productflow_backend.config import filter_image_tool_options, normalize_image_generation_size
+from productflow_backend.domain.durable_generation_tasks import (
+    IMAGE_SESSION_GENERATION_TASK_CONTRACT,
+    QUEUE_UNAVAILABLE_DETAIL,
+)
 from productflow_backend.domain.enums import ImageSessionAssetKind, JobStatus, SourceAssetKind
 from productflow_backend.domain.errors import BusinessValidationError, NotFoundError
 from productflow_backend.infrastructure.db.models import (
@@ -901,7 +905,7 @@ def _update_image_generation_task_progress(
     commit: bool = True,
 ) -> None:
     task = session.get(ImageSessionGenerationTask, task_id)
-    if task is None or task.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+    if task is None or not IMAGE_SESSION_GENERATION_TASK_CONTRACT.is_active(task.status):
         return
     task.progress_phase = phase[:64]
     task.progress_updated_at = now_utc()
@@ -959,7 +963,7 @@ def _mark_image_generation_task_running(
     session: Session,
     task: ImageSessionGenerationTask,
 ) -> _ImageSessionGenerationTaskClaimResult:
-    if task.status != JobStatus.QUEUED:
+    if not IMAGE_SESSION_GENERATION_TASK_CONTRACT.is_queued(task.status):
         return _ImageSessionGenerationTaskClaimResult(claimed=False)
     now = now_utc()
     if not generation_running_capacity_available(session):
@@ -971,10 +975,10 @@ def _mark_image_generation_task_running(
         update(ImageSessionGenerationTask)
         .where(
             ImageSessionGenerationTask.id == task.id,
-            ImageSessionGenerationTask.status == JobStatus.QUEUED,
+            ImageSessionGenerationTask.status.in_(IMAGE_SESSION_GENERATION_TASK_CONTRACT.queued_statuses),
         )
         .values(
-            status=JobStatus.RUNNING,
+            status=IMAGE_SESSION_GENERATION_TASK_CONTRACT.running_statuses[0],
             started_at=now,
             finished_at=None,
             failure_reason=None,
