@@ -13,7 +13,14 @@ from productflow_backend.domain.durable_generation_tasks import (
     WORKFLOW_RUN_GENERATION_TASK_CONTRACT,
     assert_actor_uses_durable_generation_contract,
 )
-from productflow_backend.infrastructure.logging import cleanup_old_logs, configure_logging
+from productflow_backend.infrastructure.logging import (
+    cleanup_old_logs,
+    configure_logging,
+    reset_image_session_generation_task_id,
+    reset_workflow_run_id,
+    set_image_session_generation_task_id,
+    set_workflow_run_id,
+)
 from productflow_backend.infrastructure.queue import (
     get_broker,
     recover_unfinished_image_session_generation_tasks,
@@ -39,13 +46,21 @@ PRODUCT_WORKFLOW_WORKER_FAILSAFE_TIME_LIMIT_MS = get_product_workflow_worker_fai
 @dramatiq.actor(max_retries=0, time_limit=PRODUCT_WORKFLOW_WORKER_FAILSAFE_TIME_LIMIT_MS)
 def run_product_workflow_run(workflow_run_id: str) -> None:
     """商品工作流 worker：执行边界内部负责把失败落库。"""
-    execute_product_workflow_run(workflow_run_id)
+    token = set_workflow_run_id(workflow_run_id)
+    try:
+        execute_product_workflow_run(workflow_run_id)
+    finally:
+        reset_workflow_run_id(token)
 
 
 @dramatiq.actor(max_retries=0, time_limit=IMAGE_SESSION_WORKER_FAILSAFE_TIME_LIMIT_MS)
 def run_image_session_generation_task(task_id: str) -> None:
     """连续生图 worker：执行失败落库为通用安全错误。"""
-    execute_image_session_generation_task(task_id)
+    token = set_image_session_generation_task_id(task_id)
+    try:
+        execute_image_session_generation_task(task_id)
+    finally:
+        reset_image_session_generation_task_id(token)
 
 
 assert_actor_uses_durable_generation_contract(WORKFLOW_RUN_GENERATION_TASK_CONTRACT, run_product_workflow_run)

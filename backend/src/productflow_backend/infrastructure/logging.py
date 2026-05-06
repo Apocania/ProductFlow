@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
 from collections.abc import Iterable
+from contextvars import ContextVar, Token
 from copy import copy
 from http import HTTPStatus
 from logging.handlers import RotatingFileHandler
@@ -14,6 +16,49 @@ from productflow_backend.infrastructure.db.models import utcnow
 _PRODUCTFLOW_FILE_HANDLER = "_productflow_file_handler"
 _PRODUCTFLOW_STREAM_HANDLER = "_productflow_stream_handler"
 _UVICORN_FILE_LOGGERS = ("uvicorn.error", "uvicorn.access")
+_EMPTY_CONTEXT_VALUE = "-"
+_request_id_var: ContextVar[str] = ContextVar("request_id", default=_EMPTY_CONTEXT_VALUE)
+_workflow_run_id_var: ContextVar[str] = ContextVar("workflow_run_id", default=_EMPTY_CONTEXT_VALUE)
+_image_session_generation_task_id_var: ContextVar[str] = ContextVar(
+    "image_session_generation_task_id",
+    default=_EMPTY_CONTEXT_VALUE,
+)
+
+
+def new_request_id() -> str:
+    return uuid.uuid4().hex
+
+
+def set_request_id(request_id: str) -> Token[str]:
+    return _request_id_var.set(request_id)
+
+
+def reset_request_id(token: Token[str]) -> None:
+    _request_id_var.reset(token)
+
+
+def set_workflow_run_id(workflow_run_id: str) -> Token[str]:
+    return _workflow_run_id_var.set(workflow_run_id)
+
+
+def reset_workflow_run_id(token: Token[str]) -> None:
+    _workflow_run_id_var.reset(token)
+
+
+def set_image_session_generation_task_id(task_id: str) -> Token[str]:
+    return _image_session_generation_task_id_var.set(task_id)
+
+
+def reset_image_session_generation_task_id(token: Token[str]) -> None:
+    _image_session_generation_task_id_var.reset(token)
+
+
+def current_log_context() -> dict[str, str]:
+    return {
+        "request_id": _request_id_var.get(),
+        "workflow_run_id": _workflow_run_id_var.get(),
+        "image_session_generation_task_id": _image_session_generation_task_id_var.get(),
+    }
 
 
 def get_log_file_path(settings: Settings | None = None) -> Path:
@@ -38,7 +83,11 @@ def configure_logging(settings: Settings | None = None) -> None:
     log_dir = log_file.parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    formatter = _ProductFlowFormatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    formatter = _ProductFlowFormatter(
+        "%(asctime)s %(levelname)s [%(name)s] "
+        "request_id=%(request_id)s workflow_run_id=%(workflow_run_id)s "
+        "image_session_generation_task_id=%(image_session_generation_task_id)s %(message)s"
+    )
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
@@ -93,8 +142,18 @@ class _ProductFlowFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         if record.name == "uvicorn.access":
-            record = _with_uvicorn_status_phrase(record)
-        return super().format(record)
+            context_record = _with_uvicorn_status_phrase(record)
+        else:
+            context_record = copy(record)
+        if context_record is record:
+            context_record = copy(record)
+        _apply_log_context(context_record)
+        return super().format(context_record)
+
+
+def _apply_log_context(record: logging.LogRecord) -> None:
+    for key, value in current_log_context().items():
+        setattr(record, key, value)
 
 
 def _ensure_shared_file_handler(

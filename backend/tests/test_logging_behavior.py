@@ -3,11 +3,59 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import Response
+from fastapi.testclient import TestClient
 
 from productflow_backend.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _clean_log_context() -> Iterator[None]:
+    from productflow_backend.infrastructure.logging import (
+        reset_image_session_generation_task_id,
+        reset_request_id,
+        reset_workflow_run_id,
+        set_image_session_generation_task_id,
+        set_request_id,
+        set_workflow_run_id,
+    )
+
+    request_token = set_request_id("-")
+    workflow_token = set_workflow_run_id("-")
+    task_token = set_image_session_generation_task_id("-")
+    try:
+        yield
+    finally:
+        reset_image_session_generation_task_id(task_token)
+        reset_workflow_run_id(workflow_token)
+        reset_request_id(request_token)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging_state() -> Iterator[None]:
+    loggers = (
+        logging.getLogger(),
+        logging.getLogger("uvicorn"),
+        logging.getLogger("uvicorn.error"),
+        logging.getLogger("uvicorn.access"),
+    )
+    original_state = {logger.name: (list(logger.handlers), logger.level, logger.propagate) for logger in loggers}
+    try:
+        yield
+    finally:
+        for logger in loggers:
+            saved_handlers, saved_level, saved_propagate = original_state[logger.name]
+            for handler in list(logger.handlers):
+                if handler not in saved_handlers:
+                    logger.removeHandler(handler)
+                    handler.close()
+            logger.handlers = saved_handlers
+            logger.setLevel(saved_level)
+            logger.propagate = saved_propagate
 
 
 def test_default_log_dir_uses_backend_storage_when_running_from_backend(
@@ -170,3 +218,191 @@ def test_configure_logging_mirrors_uvicorn_lifecycle_and_access_logs(
             logger.handlers = saved_handlers
             logger.setLevel(saved_level)
             logger.propagate = saved_propagate
+
+
+def test_logging_formatter_includes_current_context_and_stable_empty_context() -> None:
+    from productflow_backend.infrastructure.logging import (
+        _ProductFlowFormatter,
+        reset_image_session_generation_task_id,
+        reset_request_id,
+        reset_workflow_run_id,
+        set_image_session_generation_task_id,
+        set_request_id,
+        set_workflow_run_id,
+    )
+
+    formatter = _ProductFlowFormatter(
+        "request_id=%(request_id)s workflow_run_id=%(workflow_run_id)s "
+        "image_session_generation_task_id=%(image_session_generation_task_id)s %(message)s"
+    )
+
+    empty_record = logging.LogRecord(
+        name="productflow_backend.tests.context",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="context placeholder line",
+        args=(),
+        exc_info=None,
+    )
+    assert formatter.format(empty_record) == (
+        "request_id=- workflow_run_id=- image_session_generation_task_id=- context placeholder line"
+    )
+    assert "request_id" not in empty_record.__dict__
+    assert "workflow_run_id" not in empty_record.__dict__
+    assert "image_session_generation_task_id" not in empty_record.__dict__
+
+    request_token = set_request_id("request-1")
+    workflow_token = set_workflow_run_id("workflow-run-1")
+    task_token = set_image_session_generation_task_id("image-task-1")
+    try:
+        context_record = logging.LogRecord(
+            name="productflow_backend.tests.context",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="context value line",
+            args=(),
+            exc_info=None,
+        )
+
+        assert formatter.format(context_record) == (
+            "request_id=request-1 workflow_run_id=workflow-run-1 "
+            "image_session_generation_task_id=image-task-1 context value line"
+        )
+        assert "request_id" not in context_record.__dict__
+        assert "workflow_run_id" not in context_record.__dict__
+        assert "image_session_generation_task_id" not in context_record.__dict__
+    finally:
+        reset_image_session_generation_task_id(task_token)
+        reset_workflow_run_id(workflow_token)
+        reset_request_id(request_token)
+
+
+def test_request_id_middleware_returns_header_and_cleans_context(configured_env: Path) -> None:
+    from productflow_backend.infrastructure.logging import current_log_context
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+
+    @app.get("/tests/request-context")
+    def request_context() -> dict[str, str]:
+        return current_log_context()
+
+    @app.get("/tests/request-context-overrides-header")
+    def request_context_overrides_header(response: Response) -> dict[str, str]:
+        response.headers["X-Request-ID"] = "route-request-id"
+        return current_log_context()
+
+    client = TestClient(app)
+
+    supplied = client.get("/tests/request-context", headers={"X-Request-ID": "incoming-request-1"})
+    generated = client.get("/tests/request-context")
+    override = client.get(
+        "/tests/request-context-overrides-header",
+        headers={"X-Request-ID": "incoming-request-2"},
+    )
+
+    assert supplied.status_code == 200
+    assert supplied.headers["X-Request-ID"] == "incoming-request-1"
+    assert supplied.json() == {
+        "request_id": "incoming-request-1",
+        "workflow_run_id": "-",
+        "image_session_generation_task_id": "-",
+    }
+    assert generated.status_code == 200
+    assert generated.headers["X-Request-ID"]
+    assert generated.json()["request_id"] == generated.headers["X-Request-ID"]
+    assert override.status_code == 200
+    assert override.headers["X-Request-ID"] == "incoming-request-2"
+    assert override.headers.get_list("X-Request-ID") == ["incoming-request-2"]
+    assert current_log_context()["request_id"] == "-"
+
+
+def test_request_id_middleware_preserves_http_exception_body_header_and_context_cleanup(configured_env: Path) -> None:
+    from fastapi import HTTPException
+
+    from productflow_backend.infrastructure.logging import current_log_context
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+
+    @app.get("/tests/request-error")
+    def request_error() -> None:
+        assert current_log_context()["request_id"] == "error-request-1"
+        raise HTTPException(status_code=418, detail="teapot")
+
+    client = TestClient(app)
+
+    response = client.get("/tests/request-error", headers={"X-Request-ID": "error-request-1"})
+
+    assert response.status_code == 418
+    assert response.headers["X-Request-ID"] == "error-request-1"
+    assert response.json() == {"detail": "teapot"}
+    assert current_log_context()["request_id"] == "-"
+
+
+def test_worker_actors_set_and_clear_log_context(monkeypatch: pytest.MonkeyPatch, configured_env: Path) -> None:
+    from productflow_backend.infrastructure.logging import current_log_context
+    from productflow_backend.workers import run_image_session_generation_task, run_product_workflow_run
+
+    observed: list[dict[str, str]] = []
+
+    def capture_workflow_context(workflow_run_id: str) -> None:
+        assert workflow_run_id == "workflow-run-1"
+        observed.append(current_log_context())
+
+    def capture_image_task_context(task_id: str) -> None:
+        assert task_id == "image-task-1"
+        observed.append(current_log_context())
+
+    monkeypatch.setattr("productflow_backend.workers.execute_product_workflow_run", capture_workflow_context)
+    monkeypatch.setattr("productflow_backend.workers.execute_image_session_generation_task", capture_image_task_context)
+
+    run_product_workflow_run.fn("workflow-run-1")
+    assert current_log_context()["workflow_run_id"] == "-"
+
+    run_image_session_generation_task.fn("image-task-1")
+    assert current_log_context()["image_session_generation_task_id"] == "-"
+
+    assert observed == [
+        {
+            "request_id": "-",
+            "workflow_run_id": "workflow-run-1",
+            "image_session_generation_task_id": "-",
+        },
+        {
+            "request_id": "-",
+            "workflow_run_id": "-",
+            "image_session_generation_task_id": "image-task-1",
+        },
+    ]
+
+
+def test_worker_actors_clear_log_context_when_execution_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_env: Path,
+) -> None:
+    from productflow_backend.infrastructure.logging import current_log_context
+    from productflow_backend.workers import run_image_session_generation_task, run_product_workflow_run
+
+    def raise_workflow_error(workflow_run_id: str) -> None:
+        assert workflow_run_id == "workflow-run-error"
+        assert current_log_context()["workflow_run_id"] == "workflow-run-error"
+        raise RuntimeError("workflow failed")
+
+    def raise_image_task_error(task_id: str) -> None:
+        assert task_id == "image-task-error"
+        assert current_log_context()["image_session_generation_task_id"] == "image-task-error"
+        raise RuntimeError("image task failed")
+
+    monkeypatch.setattr("productflow_backend.workers.execute_product_workflow_run", raise_workflow_error)
+    monkeypatch.setattr("productflow_backend.workers.execute_image_session_generation_task", raise_image_task_error)
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        run_product_workflow_run.fn("workflow-run-error")
+    assert current_log_context()["workflow_run_id"] == "-"
+
+    with pytest.raises(RuntimeError, match="image task failed"):
+        run_image_session_generation_task.fn("image-task-error")
+    assert current_log_context()["image_session_generation_task_id"] == "-"

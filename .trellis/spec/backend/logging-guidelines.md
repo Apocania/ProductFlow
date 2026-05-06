@@ -14,6 +14,12 @@ Current observability files and mechanisms:
 
 - `backend/src/productflow_backend/infrastructure/logging.py` configures stdout plus rotating file logs and deletes expired
   log files.
+- `backend/src/productflow_backend/infrastructure/logging.py` also owns the process-local log context backed by
+  `contextvars`: `request_id`, `workflow_run_id`, and `image_session_generation_task_id`.
+- `backend/src/productflow_backend/presentation/api.py` sets API request context from `X-Request-ID` or a generated id and
+  returns the same value in the response header.
+- `backend/src/productflow_backend/workers.py` sets worker context at the Dramatiq actor boundary for product workflow runs
+  and continuous image-session generation tasks, then clears it when the actor returns or raises.
 - `backend/src/productflow_backend/workers.py` persists async workflow and continuous image generation state through
   application use cases rather than logging retry state only.
 - `backend/src/productflow_backend/application/product_workflow_execution.py` updates `WorkflowRun` /
@@ -72,6 +78,124 @@ Then log at the boundary where the event is meaningful:
 - `debug`: local-only details that are too noisy for normal runs.
 
 Do not add `print(...)` to backend application code for diagnostics. Use tests or temporary local instrumentation instead.
+
+## Scenario: Request and worker log context
+
+### 1. Scope / Trigger
+- Trigger: adding API middleware, worker actor boundaries, queue recovery, or logging formatter changes that affect
+  request/job/task correlation.
+
+### 2. Signatures
+- `new_request_id() -> str`
+- `set_request_id(request_id: str) -> Token[str]` / `reset_request_id(token: Token[str]) -> None`
+- `set_workflow_run_id(workflow_run_id: str) -> Token[str]` / `reset_workflow_run_id(token: Token[str]) -> None`
+- `set_image_session_generation_task_id(task_id: str) -> Token[str]` /
+  `reset_image_session_generation_task_id(token: Token[str]) -> None`
+- `current_log_context() -> dict[str, str]`
+- API header contract: request `X-Request-ID` is optional; response `X-Request-ID` is always set.
+
+### 3. Contracts
+- Log lines include stable, human-readable fields: `request_id`, `workflow_run_id`, and
+  `image_session_generation_task_id`.
+- API requests accept incoming `X-Request-ID`; when missing, the backend generates one and returns it in the same response
+  header.
+- API request id correlation must not change any JSON response model or route response shape.
+- `run_product_workflow_run(...)` sets `workflow_run_id` only while that Dramatiq actor executes.
+- `run_image_session_generation_task(...)` sets `image_session_generation_task_id` only while that Dramatiq actor executes.
+- Ordinary process logs outside request/worker context use `-` placeholders.
+
+### 4. Validation & Error Matrix
+- Missing request header -> generate a non-empty request id and return it in `X-Request-ID`.
+- Incoming request header present -> preserve the exact value and return the same value in `X-Request-ID`.
+- Route handler raises -> request context still resets in `finally`; response header should remain attached when the
+  exception is converted into an HTTP response by middleware/exception handling.
+- Worker actor returns or raises -> worker context resets in `finally`.
+- Ordinary startup/recovery logs -> formatter fields render as `-`, not stale ids.
+
+### 5. Good/Base/Bad Cases
+- Good: API log emitted during a request includes `request_id=<id>` and the HTTP response has the same `X-Request-ID`.
+- Good: product workflow worker logs include `workflow_run_id=<run id>` without manual string interpolation at every
+  logging call.
+- Good: continuous image-session worker logs include `image_session_generation_task_id=<task id>`.
+- Base: process startup, Uvicorn lifecycle, and queue recovery logs render `request_id=- workflow_run_id=-
+  image_session_generation_task_id=-`.
+- Bad: passing request ids through Pydantic response bodies or application DTOs.
+- Bad: setting a contextvar without resetting the token in `finally`.
+
+### 6. Tests Required
+- Formatter unit test asserting both active context values and stable `-` placeholders.
+- API middleware test asserting incoming/generated `X-Request-ID` and context cleanup after the request.
+- Worker actor boundary test asserting `workflow_run_id` / `image_session_generation_task_id` during execution and cleanup
+  afterward.
+- Run `uv run --directory backend ruff check .` and backend tests after formatter or middleware changes.
+
+### 7. Wrong vs Correct
+#### Wrong
+
+```python
+token = set_workflow_run_id(workflow_run_id)
+execute_product_workflow_run(workflow_run_id)
+```
+
+#### Correct
+
+```python
+token = set_workflow_run_id(workflow_run_id)
+try:
+    execute_product_workflow_run(workflow_run_id)
+finally:
+    reset_workflow_run_id(token)
+```
+
+## Scenario: Metrics boundary
+
+### 1. Scope / Trigger
+- Trigger: requests to add queue metrics, generation counters, Prometheus/OpenTelemetry integration, or a metrics endpoint.
+
+### 2. Signatures
+- No metrics endpoint exists in the current backend contract.
+- Durable state entrypoints remain the source for operational inspection:
+  `WorkflowRun`, `WorkflowNodeRun`, `ImageSessionGenerationTask`, `recover_unfinished_workflow_runs(...)`, and
+  `recover_unfinished_image_session_generation_tasks(...)`.
+
+### 3. Contracts
+- Do not add Prometheus, OpenTelemetry, structlog, loguru, APM agents, or a metrics endpoint without a dedicated task.
+- Do not add ad-hoc route-level counters.
+- Keep generation progress and failure evidence in durable database state:
+- `WorkflowRun` / `WorkflowNodeRun` statuses for product workflow progress and failure counts.
+- `ImageSessionGenerationTask` status, attempts, queue fields, progress heartbeat, and failure reason for continuous image
+  generation.
+- Queue recovery summaries from `recover_unfinished_workflow_runs(...)` and
+  `recover_unfinished_image_session_generation_tasks(...)`.
+
+### 4. Validation & Error Matrix
+- Need current task/run progress -> query durable rows through existing application/API paths.
+- Need queue recovery evidence -> use recovery summaries and persisted task/run state.
+- Need external metrics scraping -> create a dedicated observability task before introducing dependencies or endpoint
+  contracts.
+
+### 5. Good/Base/Bad Cases
+- Good: document a metrics tradeoff in this spec or task research before adding implementation.
+- Base: rely on durable statuses and request/worker ids for investigation.
+- Bad: adding `/metrics` opportunistically during unrelated logging work.
+- Bad: logging full prompts, provider responses, upload bytes, cookies, or data URLs as a substitute for metrics.
+
+### 6. Tests Required
+- No tests are required for a documented non-implementation decision.
+- If a future metrics endpoint is approved, add endpoint tests plus secret/payload redaction coverage.
+
+### 7. Wrong vs Correct
+#### Wrong
+
+```python
+app.include_router(metrics_router)
+```
+
+#### Correct
+
+```text
+Record the metrics decision in the observability task/spec, then implement only after the endpoint contract is approved.
+```
 
 ---
 
