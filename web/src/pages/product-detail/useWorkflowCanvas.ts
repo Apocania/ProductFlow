@@ -14,15 +14,19 @@ import {
   NODE_WIDTH,
 } from "./constants";
 import {
+  buildCanvasRect,
   buildEdgePath,
   isCanvasWheelZoomBlockedTarget,
   isPanePanBlockedTarget,
 } from "./canvasUtils";
+import { getIntersectingNodeIds } from "./selection";
 import type {
   CanvasPoint,
+  CanvasRect,
   ConnectionDragState,
   NodeDragState,
   PanePanState,
+  SelectionBoxState,
 } from "./types";
 import { clamp, readStoredNumber } from "./utils";
 
@@ -47,6 +51,8 @@ interface UseWorkflowCanvasOptions {
   zoomStorageKey: string;
   structureBusy: boolean;
   onSelectNode: (nodeId: string) => void;
+  onNodeDragStartSelect: (nodeId: string) => void;
+  onSelectionBoxComplete: (nodeIds: string[]) => void;
   onNodePositionCommit: (input: NodePositionCommitInput) => void;
   onConnectionCreate: (input: { sourceNodeId: string; targetNodeId: string }) => void;
 }
@@ -78,11 +84,17 @@ export function buildConnectionDragPath(connectionDrag: ConnectionDragState): st
   return `M ${connectionDrag.from.x} ${connectionDrag.from.y} C ${connectionDrag.from.x + mid} ${connectionDrag.from.y}, ${connectionDrag.to.x - mid} ${connectionDrag.to.y}, ${connectionDrag.to.x} ${connectionDrag.to.y}`;
 }
 
+export function getSelectionBoxRect(selectionBox: SelectionBoxState): CanvasRect {
+  return buildCanvasRect(selectionBox.origin, selectionBox.current);
+}
+
 export function useWorkflowCanvas({
   workflow,
   zoomStorageKey,
   structureBusy,
   onSelectNode,
+  onNodeDragStartSelect,
+  onSelectionBoxComplete,
   onNodePositionCommit,
   onConnectionCreate,
 }: UseWorkflowCanvasOptions) {
@@ -99,6 +111,7 @@ export function useWorkflowCanvas({
   const [optimisticNodePositions, setOptimisticNodePositions] = useState<Record<string, CanvasPoint>>({});
   const [connectionDrag, setConnectionDrag] = useState<ConnectionDragState | null>(null);
   const [panePan, setPanePan] = useState<PanePanState | null>(null);
+  const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
   const [zoom, setZoom] = useState(() => normalizeWorkflowZoom(readStoredNumber(zoomStorageKey, 1)));
   const zoomRef = useRef(zoom);
   const [wheelViewRevision, setWheelViewRevision] = useState(0);
@@ -203,6 +216,18 @@ export function useWorkflowCanvas({
     delete nodeElementRefs.current[nodeId];
   };
 
+  const getNodeMeasuredRect = (nodeId: string) => {
+    const element = nodeElementRefs.current[nodeId];
+    if (!element) {
+      return null;
+    }
+    const rect = element.getBoundingClientRect();
+    return {
+      width: rect.width / zoomRef.current,
+      height: rect.height / zoomRef.current,
+    };
+  };
+
   const applyNodeElementPosition = (nodeId: string, position: CanvasPoint) => {
     const element = nodeElementRefs.current[nodeId];
     if (!element) {
@@ -268,6 +293,15 @@ export function useWorkflowCanvas({
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     disableBodyUserSelect();
+    if (event.shiftKey) {
+      const origin = getCanvasPoint(event.clientX, event.clientY);
+      setSelectionBox({
+        pointerId: event.pointerId,
+        origin,
+        current: origin,
+      });
+      return;
+    }
     setPanePan({
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -278,6 +312,18 @@ export function useWorkflowCanvas({
   };
 
   const movePanePan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (selectionBox?.pointerId === event.pointerId) {
+      event.preventDefault();
+      setSelectionBox((current) =>
+        current && current.pointerId === event.pointerId
+          ? {
+              ...current,
+              current: getCanvasPoint(event.clientX, event.clientY),
+            }
+          : current,
+      );
+      return;
+    }
     if (!panePan || panePan.pointerId !== event.pointerId) {
       return;
     }
@@ -291,6 +337,29 @@ export function useWorkflowCanvas({
   };
 
   const endPanePan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (selectionBox?.pointerId === event.pointerId) {
+      event.preventDefault();
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      restoreBodyUserSelect();
+      const finalSelectionBox = {
+        ...selectionBox,
+        current: getCanvasPoint(event.clientX, event.clientY),
+      };
+      onSelectionBoxComplete(
+        workflow
+          ? getIntersectingNodeIds(
+              workflow.nodes,
+              getSelectionBoxRect(finalSelectionBox),
+              getRenderedNodePosition,
+              getNodeMeasuredRect,
+            )
+          : [],
+      );
+      setSelectionBox(null);
+      return;
+    }
     if (!panePan || panePan.pointerId !== event.pointerId) {
       return;
     }
@@ -303,6 +372,14 @@ export function useWorkflowCanvas({
   };
 
   const cancelPanePan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (selectionBox && selectionBox.pointerId === event.pointerId) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      restoreBodyUserSelect();
+      setSelectionBox(null);
+      return;
+    }
     if (panePan && panePan.pointerId !== event.pointerId) {
       return;
     }
@@ -361,15 +438,17 @@ export function useWorkflowCanvas({
     if (event.button !== 0) {
       return;
     }
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      return;
+    }
     const actionTarget = event.target instanceof HTMLElement ? event.target.closest("[data-node-action]") : null;
     if (actionTarget) {
       return;
     }
-    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     disableBodyUserSelect();
     const point = getCanvasPoint(event.clientX, event.clientY);
-    onSelectNode(node.id);
+    onNodeDragStartSelect(node.id);
     const renderedPosition = getRenderedNodePosition(node);
     const nextDrag = {
       nodeId: node.id,
@@ -536,6 +615,12 @@ export function useWorkflowCanvas({
     };
   };
 
+  const selectionBoxRect = selectionBox ? getSelectionBoxRect(selectionBox) : null;
+  const previewSelectedNodeIds =
+    workflow && selectionBoxRect
+      ? getIntersectingNodeIds(workflow.nodes, selectionBoxRect, getRenderedNodePosition, getNodeMeasuredRect)
+      : [];
+
   return {
     canvasScrollRef,
     canvasRef,
@@ -543,6 +628,8 @@ export function useWorkflowCanvas({
     nodeDrag,
     connectionDrag,
     panePan,
+    selectionBoxRect,
+    previewSelectedNodeIds,
     updateZoom,
     getRenderedNodePosition,
     getOutputHandlePoint,

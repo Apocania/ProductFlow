@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Check,
   Image as ImageIcon,
   Layers3,
   Loader2,
@@ -14,6 +15,7 @@ import {
   Play,
   Plus,
   Settings2,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -50,6 +52,14 @@ import {
   getVisibleReferenceAssets,
 } from "./product-detail/galleryImages";
 import { getNodeImageDownload, getSourceImageDownload } from "./product-detail/imageDownloads";
+import {
+  clearSelectedNodeGroup,
+  deleteNodeFromSelection,
+  focusSelectedNodeGroup,
+  reconcileSelectedNodeIds,
+  replaceSelectedNodeIdsFromBox,
+  toggleSelectedNodeId,
+} from "./product-detail/selection";
 import type { NodeConfigDraft, SaveStatus } from "./product-detail/types";
 import {
   clamp,
@@ -91,7 +101,9 @@ export function ProductDetailPage() {
   const wasWorkflowActiveRef = useRef(false);
   const draftVersionRef = useRef(0);
   const previousDraftNodeIdRef = useRef<string | null>(null);
+  const skipNextCanvasBlankClickRef = useRef(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("details");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [topChromeCollapsed, setTopChromeCollapsed] = useState(false);
@@ -164,15 +176,25 @@ export function ProductDetailPage() {
 
   useEffect(() => {
     if (!workflow?.nodes.length) {
+      if (selectedNodeId) {
+        setSelectedNodeId(null);
+      }
+      if (selectedNodeIds.length) {
+        setSelectedNodeIds([]);
+      }
       return;
     }
-    const stillExists = workflow.nodes.some(
-      (node) => node.id === selectedNodeId,
-    );
-    if (!selectedNodeId || !stillExists) {
-      setSelectedNodeId(workflow.nodes[0].id);
+    const reconciledSelection = reconcileSelectedNodeIds(selectedNodeIds, workflow.nodes, selectedNodeId);
+    if (reconciledSelection.primaryNodeId !== selectedNodeId) {
+      setSelectedNodeId(reconciledSelection.primaryNodeId);
     }
-  }, [selectedNodeId, workflow]);
+    if (
+      reconciledSelection.selectedNodeIds.length !== selectedNodeIds.length ||
+      reconciledSelection.selectedNodeIds.some((nodeId, index) => nodeId !== selectedNodeIds[index])
+    ) {
+      setSelectedNodeIds(reconciledSelection.selectedNodeIds);
+    }
+  }, [selectedNodeId, selectedNodeIds, workflow]);
 
   useEffect(() => {
     const selectedId = selectedNode?.id ?? null;
@@ -270,10 +292,20 @@ export function ProductDetailPage() {
     setSaveStatus("idle");
   };
 
+  const applyPrimarySelection = (nodeId: string, nodeIds: string[]) => {
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds(nodeIds);
+    setActiveSidebarTab("details");
+  };
+
+  const clearMultiSelection = () => {
+    setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
+  };
+
   const selectNodeForDetails = (nodeId: string) => {
     const applySelection = () => {
-      setSelectedNodeId(nodeId);
-      setActiveSidebarTab("details");
+      const nextSelection = focusSelectedNodeGroup(selectedNodeIds, nodeId);
+      applyPrimarySelection(nodeId, nextSelection.selectedNodeIds);
     };
     if (nodeId === selectedNode?.id || !draftDirty) {
       applySelection();
@@ -283,6 +315,105 @@ export function ProductDetailPage() {
       try {
         await flushSelectedDraft();
         applySelection();
+      } catch {
+        // Mutations already surface ApiError.detail in local error state.
+      }
+    })();
+  };
+
+  const toggleNodeSelectionForDetails = (nodeId: string) => {
+    const applySelection = () => {
+      const nextSelectedNodeIds = toggleSelectedNodeId(selectedNodeIds, nodeId);
+      const nextPrimaryNodeId = nextSelectedNodeIds.includes(nodeId)
+        ? nodeId
+        : selectedNodeId === nodeId
+          ? nextSelectedNodeIds[0] ?? workflow?.nodes[0]?.id ?? null
+          : selectedNodeId;
+      if (!nextPrimaryNodeId) {
+        setSelectedNodeId(null);
+        setSelectedNodeIds([]);
+        return;
+      }
+      applyPrimarySelection(nextPrimaryNodeId, nextSelectedNodeIds.includes(nextPrimaryNodeId) ? nextSelectedNodeIds : [nextPrimaryNodeId]);
+    };
+    if (nodeId === selectedNode?.id || !draftDirty) {
+      applySelection();
+      return;
+    }
+    void (async () => {
+      try {
+        await flushSelectedDraft();
+        applySelection();
+      } catch {
+        // Mutations already surface ApiError.detail in local error state.
+      }
+    })();
+  };
+
+  const selectNodeFromPointer = (nodeId: string, event: ReactPointerEvent | ReactMouseEvent) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      toggleNodeSelectionForDetails(nodeId);
+      return;
+    }
+    selectNodeForDetails(nodeId);
+  };
+
+  const selectNodeForDragStart = (nodeId: string) => {
+    if (selectedNodeIds.includes(nodeId)) {
+      if (nodeId !== selectedNodeId) {
+        applyPrimarySelection(nodeId, selectedNodeIds);
+      }
+      return;
+    }
+    selectNodeForDetails(nodeId);
+  };
+
+  const handleCanvasBlankClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (skipNextCanvasBlankClickRef.current) {
+      skipNextCanvasBlankClickRef.current = false;
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest(
+        [
+          "[data-workflow-node-id]",
+          "[data-node-action]",
+          "[data-workflow-target-node-id]",
+          "[data-canvas-control]",
+          "button",
+          "a",
+          "input",
+          "textarea",
+          "select",
+          "label",
+          "[role='button']",
+        ].join(","),
+      )
+    ) {
+      return;
+    }
+    clearMultiSelection();
+  };
+
+  const replaceSelectionFromBox = (nodeIds: string[]) => {
+    skipNextCanvasBlankClickRef.current = true;
+    const nextSelection = replaceSelectedNodeIdsFromBox(nodeIds, selectedNodeId);
+    if (!nextSelection.primaryNodeId) {
+      setSelectedNodeId(null);
+      setSelectedNodeIds([]);
+      return;
+    }
+    const primaryNodeId = nextSelection.primaryNodeId;
+    if (primaryNodeId === selectedNode?.id || !draftDirty) {
+      applyPrimarySelection(primaryNodeId, nextSelection.selectedNodeIds);
+      return;
+    }
+    void (async () => {
+      try {
+        await flushSelectedDraft();
+        applyPrimarySelection(primaryNodeId, nextSelection.selectedNodeIds);
       } catch {
         // Mutations already surface ApiError.detail in local error state.
       }
@@ -371,6 +502,7 @@ export function ProductDetailPage() {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       )[0];
       setSelectedNodeId(newest?.id ?? null);
+      setSelectedNodeIds(newest ? [newest.id] : []);
       setActiveSidebarTab("details");
     },
     onError: (mutationError) => {
@@ -406,6 +538,7 @@ export function ProductDetailPage() {
         createdNodes[0] ??
         null;
       setSelectedNodeId(selectedCreatedNode?.id ?? null);
+      setSelectedNodeIds(selectedCreatedNode ? [selectedCreatedNode.id] : []);
       setActiveSidebarTab("details");
     },
     onError: (mutationError) => {
@@ -451,6 +584,7 @@ export function ProductDetailPage() {
     onSuccess: async (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
+      setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
       await refreshProductArtifacts();
     },
     onError: (mutationError) => {
@@ -524,6 +658,7 @@ export function ProductDetailPage() {
     onSuccess: (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
+      setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
     },
     onError: (mutationError) => {
       setError(
@@ -539,6 +674,7 @@ export function ProductDetailPage() {
     onSuccess: (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
+      setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
     },
     onError: (mutationError) => {
       setError(
@@ -554,9 +690,10 @@ export function ProductDetailPage() {
     onSuccess: (nextWorkflow, nodeId) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
-      if (selectedNodeId === nodeId) {
-        setSelectedNodeId(nextWorkflow.nodes[0]?.id ?? null);
-      }
+      const fallbackPrimaryNodeId = selectedNodeId === nodeId ? nextWorkflow.nodes[0]?.id ?? null : selectedNodeId;
+      const nextSelection = deleteNodeFromSelection(selectedNodeIds, nodeId, fallbackPrimaryNodeId);
+      setSelectedNodeId(nextSelection.primaryNodeId);
+      setSelectedNodeIds(nextSelection.selectedNodeIds);
     },
     onError: (mutationError) => {
       setError(
@@ -588,6 +725,7 @@ export function ProductDetailPage() {
     onSuccess: async (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
+      setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
       await refreshProductArtifacts();
     },
     onError: (mutationError) => {
@@ -730,6 +868,8 @@ export function ProductDetailPage() {
     zoomStorageKey: "productflow.workflow.zoom",
     structureBusy,
     onSelectNode: selectNodeForDetails,
+    onNodeDragStartSelect: selectNodeForDragStart,
+    onSelectionBoxComplete: replaceSelectionFromBox,
     onNodePositionCommit: (input: NodePositionCommitInput) => {
       const rollbackWorkflow = queryClient.getQueryData<ProductWorkflow>([
         "product-workflow",
@@ -770,6 +910,8 @@ export function ProductDetailPage() {
     nodeDrag,
     connectionDrag,
     panePan,
+    selectionBoxRect,
+    previewSelectedNodeIds,
     updateZoom,
     getRenderedNodePosition,
     getOutputHandlePoint,
@@ -834,6 +976,8 @@ export function ProductDetailPage() {
   const artifactCount = posters.length + referenceAssets.length;
   const selectedReferenceNode =
     selectedNode?.node_type === "reference_image" ? selectedNode : null;
+  const selectedNodeIdSet = new Set(selectedNodeIds);
+  const selectedGroupCount = selectedNodeIds.length;
   const fillReferenceBusy = bindNodeImageMutation.isPending;
   const queueOverview = queueOverviewQuery.data ?? null;
   const showQueueOverview = Boolean(queueOverview && queueOverview.active_count > 0);
@@ -913,6 +1057,7 @@ export function ProductDetailPage() {
               onPointerUp={endPanePan}
               onPointerCancel={cancelPanePan}
               onLostPointerCapture={cancelPanePan}
+              onClick={handleCanvasBlankClick}
               onWheel={handleCanvasWheel}
             >
               {workflowQuery.isLoading ? (
@@ -991,6 +1136,17 @@ export function ProductDetailPage() {
                     </button>
                   );
                 })}
+                    {selectionBoxRect ? (
+                      <div
+                        className="pointer-events-none absolute z-30 rounded-md border border-indigo-400 bg-indigo-500/10 shadow-[0_0_0_1px_rgba(99,102,241,0.12)]"
+                        style={{
+                          left: selectionBoxRect.x,
+                          top: selectionBoxRect.y,
+                          width: selectionBoxRect.width,
+                          height: selectionBoxRect.height,
+                        }}
+                      />
+                    ) : null}
                     {workflow.nodes.map((node) => (
                       <WorkflowNodeCard
                         key={node.id}
@@ -998,9 +1154,11 @@ export function ProductDetailPage() {
                         nodeRef={(element) => setNodeElementRef(node.id, element)}
                         position={getRenderedNodePosition(node)}
                         image={getNodeImageDownload(node, product)}
-                        selected={node.id === selectedNode?.id}
+                        primarySelected={node.id === selectedNode?.id}
+                        secondarySelected={selectedNodeIdSet.has(node.id) && node.id !== selectedNode?.id}
+                        previewSelected={previewSelectedNodeIds.includes(node.id)}
                         dragging={nodeDrag?.nodeId === node.id}
-                        onSelect={() => selectNodeForDetails(node.id)}
+                        onSelect={(event) => selectNodeFromPointer(node.id, event)}
                         onStartDrag={(event) => startNodeDrag(node, event)}
                         onMoveDrag={moveNodeDrag}
                         onEndDrag={endNodeDrag}
@@ -1056,6 +1214,23 @@ export function ProductDetailPage() {
               </button>
               </div>
             </div>
+            {selectedGroupCount > 1 ? (
+              <div data-canvas-control className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2">
+                <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-indigo-200 bg-white/95 px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-950/10 backdrop-blur">
+                  <Check size={16} strokeWidth={2.5} />
+                  <span>已选 {selectedGroupCount}</span>
+                  <button
+                    type="button"
+                    onClick={clearMultiSelection}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-600 shadow-sm transition-colors hover:border-red-300 hover:bg-red-100 hover:text-red-700"
+                    aria-label="清空多选"
+                    title="清空多选"
+                  >
+                    <X size={18} strokeWidth={2.5} />
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
 
           {sidebarCollapsed ? (

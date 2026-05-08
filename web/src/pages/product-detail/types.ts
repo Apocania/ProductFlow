@@ -5,6 +5,13 @@ export type CanvasPoint = {
   y: number;
 };
 
+export type CanvasRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type NodeDragState = {
   nodeId: string;
   pointerId: number;
@@ -27,6 +34,12 @@ export type PanePanState = {
   startY: number;
   startScrollLeft: number;
   startScrollTop: number;
+};
+
+export type SelectionBoxState = {
+  pointerId: number;
+  origin: CanvasPoint;
+  current: CanvasPoint;
 };
 
 export type SaveStatus = "idle" | "saving" | "saved" | "failed";

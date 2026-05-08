@@ -1,5 +1,6 @@
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
+  Check,
   FileText,
   Image as ImageIcon,
   ImagePlus,
@@ -30,9 +31,11 @@ interface WorkflowNodeCardProps {
   nodeRef: (element: HTMLDivElement | null) => void;
   position: CanvasPoint;
   image: DownloadableImage | null;
-  selected: boolean;
+  primarySelected: boolean;
+  secondarySelected: boolean;
+  previewSelected: boolean;
   dragging: boolean;
-  onSelect: () => void;
+  onSelect: (event: ReactMouseEvent<HTMLElement>) => void;
   onStartDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onMoveDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onEndDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -51,7 +54,9 @@ export function WorkflowNodeCard({
   nodeRef,
   position,
   image,
-  selected,
+  primarySelected,
+  secondarySelected,
+  previewSelected,
   dragging,
   onSelect,
   onStartDrag,
@@ -75,6 +80,11 @@ export function WorkflowNodeCard({
   const Icon = icon;
   const imageWaiting = isImageWorkflowNodeWaiting(node);
   const waitingLabel = imageWorkflowNodeWaitingLabel(node);
+  const selectedClassName = primarySelected
+    ? "border-indigo-300 shadow-lg shadow-indigo-950/10 ring-2 ring-indigo-200/70"
+    : secondarySelected || previewSelected
+      ? "border-sky-300 shadow-md shadow-sky-950/5 ring-2 ring-sky-100"
+      : "border-slate-200";
 
   return (
     <div
@@ -82,9 +92,7 @@ export function WorkflowNodeCard({
       data-workflow-node-id={node.id}
       className={`absolute w-[248px] touch-none select-none rounded-2xl border bg-white/95 p-3 text-left shadow-sm backdrop-blur ${
         dragging ? "cursor-grabbing" : "transition-[border-color,box-shadow] hover:shadow-md"
-      } ${
-        selected ? "border-indigo-300 shadow-lg shadow-indigo-950/10 ring-2 ring-indigo-200/70" : "border-slate-200"
-      }`}
+      } ${selectedClassName}`}
       style={{
         left: 0,
         top: 0,
@@ -97,6 +105,16 @@ export function WorkflowNodeCard({
       onPointerCancel={onCancelDrag}
       onLostPointerCapture={onCancelDrag}
     >
+      {primarySelected || secondarySelected || previewSelected ? (
+        <div
+          className={`pointer-events-none absolute right-2 top-2 z-20 flex h-5 w-5 items-center justify-center rounded-full border bg-white shadow-sm ${
+            primarySelected ? "border-indigo-200 text-indigo-600" : "border-sky-200 text-sky-600"
+          }`}
+          aria-hidden="true"
+        >
+          <Check size={12} strokeWidth={2.5} />
+        </div>
+      ) : null}
       <button
         type="button"
         data-node-action

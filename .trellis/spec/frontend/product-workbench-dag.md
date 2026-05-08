@@ -43,6 +43,30 @@
 - Empty canvas/background areas may be left-button dragged to pan the scrollable workbench viewport by mutating the
   viewport `scrollLeft` / `scrollTop`. Guard this interaction by target so node drag, edge handles/buttons, node actions,
   zoom controls, uploads, and panel resize handles do not start background panning.
+- ProductDetail supports canvas node multi-select through local UI state. Keep `selectedNodeId` as the primary node that
+  drives the Details sidebar, draft saving, reference-image fill target, and node-level run/delete/cancel/upload actions.
+  Keep `selectedNodeIds` as the selected node group for future group actions such as saving a node-group template. Normal
+  node click replaces the group with that node; Ctrl/Cmd/Shift click toggles a node in the group and makes newly added
+  nodes primary; Shift-drag on empty canvas draws a transient selection rectangle and replaces the group with intersecting
+  nodes. Clicking a secondary selected node without modifiers makes it the primary Details node while preserving the
+  selected group. Plain empty-canvas drag must continue to pan the viewport.
+- Multi-select visuals must distinguish primary and secondary selected nodes without relying on color alone. The primary
+  node keeps the strong selected ring used by the Details sidebar. Secondary selected nodes use a quieter ring and a small
+  check marker. The selection rectangle is a temporary translucent overlay; do not render a persistent group bounding box,
+  multi-node inspector, or batch-operation panel under the multi-select contract. When more than one node is selected, a
+  top-center canvas-control status such as `已选 N` should appear with a prominent red clear-selection button so the
+  temporary state is obvious and not hidden by bottom scroll controls.
+- Multi-select hit testing should be based on canvas coordinates so zoom and scroll do not change selection semantics.
+  Use rendered node positions plus measured card bounds when available, and fall back to stable node dimensions in pure
+  helpers. Selection state must reconcile when workflow data changes: deleted nodes are removed, the primary node remains
+  included in `selectedNodeIds`, and a missing primary falls back to another selected node or the first workflow node.
+- Treat multi-select as a temporary grouping state, not the default canvas mode. Ordinary non-group actions should collapse
+  the group back to a single primary node, including blank-canvas click, adding a node, deleting a node or edge, creating
+  an edge, uploading/filling a reference image, or applying a node-group template. Future save-as-template and deliberate
+  group drag/move flows may consume the full `selectedNodeIds` group instead of clearing it.
+- If the browser emits a click after completing a Shift-drag lasso selection, that click must not be treated as a
+  blank-canvas clear action. Skip only that immediate synthetic/paired click; later blank-canvas clicks should still exit
+  multi-select.
 - Pointer release must not flash the node back to its stale server position. Keep the final drag coordinates in an
   optimistic position layer and update the `['product-workflow', productId]` cache before/while the PATCH is in flight;
   clear the optimistic entry after the server response becomes the authority, or restore the previous cache on error.
@@ -191,6 +215,12 @@
   position mutation is pending; it must not briefly render the old `position_x` / `position_y`.
 - Base: dragging an empty canvas/background area pans the viewport, while dragging a node still persists node coordinates
   and clicking edge/delete/run/upload/zoom controls does not move the viewport.
+- Base: Shift-dragging an empty canvas area draws a temporary selection rectangle and replaces the selected node group,
+  while a normal empty-canvas drag still pans.
+- Base: multi-selecting nodes does not turn Details into a batch editor; `selectedNodeId` remains the primary node and
+  `selectedNodeIds` remains the group for future template saving or batch actions.
+- Base: clicking a secondary selected node opens that node in Details while keeping the group selected; clicking blank
+  canvas or performing ordinary node/edge/image mutations exits multi-select back to one primary node.
 - Base: while a workflow run is active, users can still drag nodes to reorganize the canvas and may run another
   non-queued/non-running node; the backend rejects overlapping planned nodes and the UI still blocks unsafe structural
   changes.
@@ -217,6 +247,9 @@
   refresh, node deletion, and product list deletion error/success states.
 - Drag-position regressions should cover the render priority: active drag position, then optimistic dropped position, then
   server workflow position.
+- Multi-select regressions should cover rectangle normalization/intersection, node hit testing with measured/fallback
+  bounds, modifier-toggle behavior, lasso replacement behavior, and selection reconciliation after workflow node changes.
+- Multi-select regressions should also cover secondary-node focus and clearing the group for ordinary non-group actions.
 - Download-link regressions should cover URL construction through `api.toApiUrl(...)`, filename sanitization, and event
   propagation isolation inside node cards.
 - Images-tab regressions should cover preview/lightbox primary click, explicit download action, gallery de-duplication, and

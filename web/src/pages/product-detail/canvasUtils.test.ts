@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildEdgePath,
+  buildCanvasRect,
+  canvasRectsIntersect,
   isCanvasWheelZoomBlockedTarget,
   isPanePanBlockedTarget,
 } from "./canvasUtils";
@@ -55,6 +57,30 @@ describe("canvas utils", () => {
     expect(buildEdgePath({ x: 0, y: 5 }, { x: 180, y: 25 })).toBe(
       "M 0 5 C 90 5, 90 25, 180 25",
     );
+  });
+
+  it("normalizes canvas rectangles from any drag direction", () => {
+    expect(buildCanvasRect({ x: 80, y: 100 }, { x: 20, y: 40 })).toEqual({
+      x: 20,
+      y: 40,
+      width: 60,
+      height: 60,
+    });
+  });
+
+  it("detects canvas rectangle intersection including touching edges", () => {
+    expect(
+      canvasRectsIntersect(
+        { x: 0, y: 0, width: 100, height: 100 },
+        { x: 100, y: 20, width: 50, height: 50 },
+      ),
+    ).toBe(true);
+    expect(
+      canvasRectsIntersect(
+        { x: 0, y: 0, width: 80, height: 80 },
+        { x: 90, y: 20, width: 50, height: 50 },
+      ),
+    ).toBe(false);
   });
 
   it("blocks pane panning on nodes and shared canvas controls", () => {
