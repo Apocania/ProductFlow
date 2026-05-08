@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleDot,
   Check,
+  Save,
   Image as ImageIcon,
   Layers3,
   Loader2,
@@ -104,6 +105,9 @@ export function ProductDetailPage() {
   const skipNextCanvasBlankClickRef = useRef(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [templateSaveTitle, setTemplateSaveTitle] = useState("");
+  const [templateSaveDescription, setTemplateSaveDescription] = useState("");
+  const [templateSaveOpen, setTemplateSaveOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("details");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [topChromeCollapsed, setTopChromeCollapsed] = useState(false);
@@ -550,6 +554,65 @@ export function ProductDetailPage() {
     },
   });
 
+  const createUserTemplateGroupMutation = useMutation({
+    mutationFn: async () => {
+      if (selectedNodeIds.length < 2) {
+        throw new Error("请先多选要保存的节点");
+      }
+      const title = templateSaveTitle.trim();
+      if (!title) {
+        throw new Error("请输入模板名称");
+      }
+      await flushSelectedDraft();
+      return api.createUserTemplateGroup(productId, {
+        title,
+        description: templateSaveDescription.trim() || undefined,
+        node_ids: selectedNodeIds,
+      });
+    },
+    onSuccess: async () => {
+      setError("");
+      setTemplateSaveOpen(false);
+      setTemplateSaveTitle("");
+      setTemplateSaveDescription("");
+      await queryClient.invalidateQueries({ queryKey: ["canvas-templates"] });
+      setActiveSidebarTab("templates");
+      setSidebarCollapsed(false);
+    },
+    onError: (mutationError) => {
+      setError(
+        mutationError instanceof ApiError
+          ? mutationError.detail
+          : mutationError instanceof Error
+            ? mutationError.message
+            : "保存模板失败",
+      );
+    },
+  });
+
+  const updateUserTemplateGroupMutation = useMutation({
+    mutationFn: ({ templateId, title }: { templateId: string; title: string }) =>
+      api.updateUserTemplateGroup(templateId, { title }),
+    onSuccess: async () => {
+      setError("");
+      await queryClient.invalidateQueries({ queryKey: ["canvas-templates"] });
+    },
+    onError: (mutationError) => {
+      setError(mutationError instanceof ApiError ? mutationError.detail : "更新模板失败");
+    },
+  });
+
+  const archiveUserTemplateGroupMutation = useMutation({
+    mutationFn: (templateId: string) => api.archiveUserTemplateGroup(templateId),
+    onSuccess: async () => {
+      setError("");
+      await queryClient.invalidateQueries({ queryKey: ["canvas-templates"] });
+    },
+    onError: (mutationError) => {
+      setError(mutationError instanceof ApiError ? mutationError.detail : "删除模板失败");
+    },
+  });
+
   const updateNodeConfigMutation = useMutation({
     mutationFn: (node: WorkflowNode) =>
       api.updateWorkflowNode(node.id, {
@@ -745,6 +808,7 @@ export function ProductDetailPage() {
     onSuccess: async (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
+      setSelectedNodeIds(clearSelectedNodeGroup(selectedNodeId));
       await refreshProductArtifacts();
     },
     onError: (mutationError) => {
@@ -984,6 +1048,10 @@ export function ProductDetailPage() {
   const nodeGroupTemplates = (canvasTemplatesQuery.data?.items ?? []).filter(
     (template) => template.kind === "node_group",
   );
+  const userTemplateMutationBusy =
+    createUserTemplateGroupMutation.isPending ||
+    updateUserTemplateGroupMutation.isPending ||
+    archiveUserTemplateGroupMutation.isPending;
 
   const renderWorkflowToolbarButtons = () => (
     <>
@@ -1216,18 +1284,73 @@ export function ProductDetailPage() {
             </div>
             {selectedGroupCount > 1 ? (
               <div data-canvas-control className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2">
-                <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-indigo-200 bg-white/95 px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-950/10 backdrop-blur">
-                  <Check size={16} strokeWidth={2.5} />
-                  <span>已选 {selectedGroupCount}</span>
-                  <button
-                    type="button"
-                    onClick={clearMultiSelection}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-600 shadow-sm transition-colors hover:border-red-300 hover:bg-red-100 hover:text-red-700"
-                    aria-label="清空多选"
-                    title="清空多选"
-                  >
-                    <X size={18} strokeWidth={2.5} />
-                  </button>
+                <div className="pointer-events-auto min-w-[22rem] rounded-xl border border-indigo-200 bg-white/95 p-2.5 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-950/10 backdrop-blur">
+                  <div className="flex items-center gap-2">
+                    <Check size={16} strokeWidth={2.5} />
+                    <span className="mr-auto">已选 {selectedGroupCount}</span>
+                    <button
+                      type="button"
+                      onClick={() => setTemplateSaveOpen((open) => !open)}
+                      disabled={createUserTemplateGroupMutation.isPending}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-700 shadow-sm transition-colors hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {createUserTemplateGroupMutation.isPending ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Save size={14} />
+                      )}
+                      保存模板
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearMultiSelection}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-600 shadow-sm transition-colors hover:border-red-300 hover:bg-red-100 hover:text-red-700"
+                      aria-label="清空多选"
+                      title="清空多选"
+                    >
+                      <X size={18} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                  {templateSaveOpen ? (
+                    <form
+                      className="mt-2 grid gap-2 border-t border-indigo-100 pt-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        createUserTemplateGroupMutation.mutate();
+                      }}
+                    >
+                      <input
+                        value={templateSaveTitle}
+                        onChange={(event) => setTemplateSaveTitle(event.target.value)}
+                        className="h-9 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-indigo-300"
+                        placeholder="模板名称"
+                        maxLength={255}
+                      />
+                      <input
+                        value={templateSaveDescription}
+                        onChange={(event) => setTemplateSaveDescription(event.target.value)}
+                        className="h-9 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-indigo-300"
+                        placeholder="描述，可选"
+                        maxLength={1000}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTemplateSaveOpen(false)}
+                          className="h-8 rounded-lg px-2.5 text-xs font-semibold text-zinc-500 hover:bg-zinc-50"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={createUserTemplateGroupMutation.isPending}
+                          className="inline-flex h-8 items-center rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          保存
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1403,6 +1526,23 @@ export function ProductDetailPage() {
                     applyBusy={applyTemplateGroupMutation.isPending}
                     applyingTemplateKey={applyTemplateGroupMutation.variables?.key ?? null}
                     onApplyTemplate={(template) => applyTemplateGroupMutation.mutate(template)}
+                    userTemplateBusy={userTemplateMutationBusy}
+                    onRenameUserTemplate={(template, title) => {
+                      if (template.user_template_id) {
+                        updateUserTemplateGroupMutation.mutate({
+                          templateId: template.user_template_id,
+                          title,
+                        });
+                      }
+                    }}
+                    onArchiveUserTemplate={(template) => {
+                      if (template.user_template_id) {
+                        if (!window.confirm(`确定删除模板「${template.title}」吗？`)) {
+                          return;
+                        }
+                        archiveUserTemplateGroupMutation.mutate(template.user_template_id);
+                      }
+                    }}
                   />
                 ) : null}
               </div>

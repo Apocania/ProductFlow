@@ -172,8 +172,21 @@
   a normalized column layout while still deriving nodes/edges from the backend summary.
 - Template cards should display backend `default_external_connections` as short chips such as `自动接商品`. These chips
   describe edges that the apply API will persist; they are not long-form instructions.
+- Template summaries include `source: "builtin" | "user"` and nullable `user_template_id`. ProductDetail must show a
+  concise source marker, expose rename/delete actions only for `source === "user"` templates, and leave built-in templates
+  immutable.
+- When more than one canvas node is selected, the top-center multi-select control may open a save-template form. The form
+  requires a template name, accepts an optional description, calls
+  `api.createUserTemplateGroup(productId, { title, description, node_ids: selectedNodeIds })`, invalidates
+  `["canvas-templates"]` on success, and switches the sidebar to Templates so the saved template is visible.
+- Deleting a user template calls `api.archiveUserTemplateGroup(user_template_id)` after user confirmation and invalidates
+  `["canvas-templates"]`; UI text may say delete, but the backend operation is archival.
+- Renaming a user template calls `api.updateUserTemplateGroup(user_template_id, { title })` and invalidates
+  `["canvas-templates"]`. The first UI contract only edits the title; description editing can stay out of the card flow.
 - Applying a built-in node group calls `api.applyWorkflowTemplateGroup(productId, { template_key, position_x,
   position_y })` and receives the normal `ProductWorkflow` response.
+- Applying a user node-group template uses the same API with `template_key === "user:{id}"`; the frontend must not special
+  case materialization locally.
 - Use the current viewport-center node position for the insertion point unless a more explicit user-selected canvas
   coordinate is part of a future task.
 - On apply success, update `['product-workflow', productId]`, refresh the workflow query, and select a created primary
@@ -241,6 +254,8 @@
 
 - `just web-build` must pass after any DTO or page change.
 - Backend API tests should cover workflow payload shapes; the frontend relies on these typed shapes at build time.
+- User-template frontend changes must pass `just web-build` because `CanvasTemplateSummary`, API helpers, ProductDetail,
+  and `TemplateGroupsPanel` all share DTO fields.
 - If a separate frontend test runner is added later, cover selected-node inspector, run-all mutation, edge drag/delete, and
   cache invalidation.
 - If a separate frontend test runner is added later, cover workflow active-run polling, active-to-inactive artifact query
@@ -250,6 +265,9 @@
 - Multi-select regressions should cover rectangle normalization/intersection, node hit testing with measured/fallback
   bounds, modifier-toggle behavior, lasso replacement behavior, and selection reconciliation after workflow node changes.
 - Multi-select regressions should also cover secondary-node focus and clearing the group for ordinary non-group actions.
+- User-template regressions should cover saving from `selectedNodeIds`, invalidating `["canvas-templates"]`, showing
+  user-only rename/delete actions, confirming archival, and applying user templates through the same template-group API as
+  built-ins.
 - Download-link regressions should cover URL construction through `api.toApiUrl(...)`, filename sanitization, and event
   propagation isolation inside node cards.
 - Images-tab regressions should cover preview/lightbox primary click, explicit download action, gallery de-duplication, and

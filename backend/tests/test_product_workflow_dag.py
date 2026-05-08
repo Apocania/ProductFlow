@@ -814,6 +814,340 @@ def test_apply_node_group_template_rejects_unknown_and_full_canvas_keys(configur
     assert "只能添加节点组模板" in full_canvas.json()["detail"]
 
 
+def test_user_template_group_create_list_rename_archive_and_apply(configured_env: Path) -> None:
+    from productflow_backend.infrastructure.db.models import UserCanvasTemplate, WorkflowEdge, WorkflowNode
+    from productflow_backend.infrastructure.db.session import get_session_factory
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+    client = TestClient(app)
+    _login(client)
+    created = client.post(
+        "/api/products",
+        data={"name": "用户模板商品"},
+        files={"image": ("user-template.png", _make_demo_image_bytes(), "image/png")},
+    )
+    assert created.status_code == 201
+    product_id = created.json()["id"]
+    workflow = client.get(f"/api/products/{product_id}/workflow").json()
+    copy_node = next(node for node in workflow["nodes"] if node["node_type"] == "copy_generation")
+    image_node = next(node for node in workflow["nodes"] if node["node_type"] == "image_generation")
+    output_node = next(node for node in workflow["nodes"] if node["node_type"] == "reference_image")
+
+    saved = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={
+            "title": "常用主图链路",
+            "description": "复用文案到生图再落槽",
+            "node_ids": [copy_node["id"], image_node["id"], output_node["id"]],
+        },
+    )
+
+    assert saved.status_code == 201
+    summary = saved.json()
+    assert summary["source"] == "user"
+    assert summary["user_template_id"]
+    assert summary["key"] == f"user:{summary['user_template_id']}"
+    assert summary["kind"] == "node_group"
+    assert summary["version"] == 1
+    assert summary["title"] == "常用主图链路"
+    assert [node["position_x"] for node in summary["preview_nodes"]] == [
+        copy_node["position_x"] - copy_node["position_x"],
+        image_node["position_x"] - copy_node["position_x"],
+        output_node["position_x"] - copy_node["position_x"],
+    ]
+
+    listed = client.get("/api/workflow/canvas-templates")
+    assert listed.status_code == 200
+    listed_template = next(item for item in listed.json()["items"] if item["key"] == summary["key"])
+    assert listed_template["title"] == "常用主图链路"
+    assert listed_template["source"] == "user"
+
+    renamed = client.patch(
+        f"/api/workflow/user-template-groups/{summary['user_template_id']}",
+        json={"title": "改名主图链路", "description": "新说明"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "改名主图链路"
+    assert renamed.json()["description"] == "新说明"
+
+    before_apply = client.get(f"/api/products/{product_id}/workflow").json()
+    previous_node_ids = {node["id"] for node in before_apply["nodes"]}
+    applied = client.post(
+        f"/api/products/{product_id}/workflow/template-groups",
+        json={"template_key": summary["key"], "position_x": 900, "position_y": 460},
+    )
+
+    assert applied.status_code == 201
+    applied_workflow = applied.json()
+    created_nodes = [node for node in applied_workflow["nodes"] if node["id"] not in previous_node_ids]
+    created_node_ids = {node["id"] for node in created_nodes}
+    assert len(created_nodes) == 3
+    assert {node["node_type"] for node in created_nodes} == {
+        "copy_generation",
+        "image_generation",
+        "reference_image",
+    }
+    assert all(node["output_json"] is None for node in created_nodes)
+    assert any(
+        edge["source_node_id"] in created_node_ids and edge["target_node_id"] in created_node_ids
+        for edge in applied_workflow["edges"]
+    )
+
+    session = get_session_factory()()
+    try:
+        template_row = session.get(UserCanvasTemplate, summary["user_template_id"])
+        assert template_row is not None
+        assert template_row.schema_version == 1
+        assert template_row.template_json["version"] == 1
+        assert template_row.template_json["kind"] == "node_group"
+        assert not _contains_key(template_row.template_json, "output_json")
+        workflow_node_count = session.query(WorkflowNode).filter_by(workflow_id=applied_workflow["id"]).count()
+        workflow_edge_count = session.query(WorkflowEdge).filter_by(workflow_id=applied_workflow["id"]).count()
+        assert workflow_node_count == len(applied_workflow["nodes"])
+        assert workflow_edge_count == len(applied_workflow["edges"])
+    finally:
+        session.close()
+
+    archived = client.delete(f"/api/workflow/user-template-groups/{summary['user_template_id']}")
+    assert archived.status_code == 204
+    listed_after_archive = client.get("/api/workflow/canvas-templates").json()
+    assert summary["key"] not in {item["key"] for item in listed_after_archive["items"]}
+    apply_archived = client.post(
+        f"/api/products/{product_id}/workflow/template-groups",
+        json={"template_key": summary["key"], "position_x": 900, "position_y": 460},
+    )
+    assert apply_archived.status_code == 400
+    assert apply_archived.json()["detail"] == "画布模板不存在"
+
+
+def test_user_template_group_preserves_unrun_prompt_config_when_applied(configured_env: Path) -> None:
+    from productflow_backend.infrastructure.db.models import UserCanvasTemplate
+    from productflow_backend.infrastructure.db.session import get_session_factory
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+    client = TestClient(app)
+    _login(client)
+    created = client.post(
+        "/api/products",
+        data={"name": "未运行模板商品"},
+        files={"image": ("unrun-template.png", _make_demo_image_bytes(), "image/png")},
+    )
+    assert created.status_code == 201
+    product_id = created.json()["id"]
+    workflow = client.get(f"/api/products/{product_id}/workflow").json()
+    copy_node = next(node for node in workflow["nodes"] if node["node_type"] == "copy_generation")
+    image_node = next(node for node in workflow["nodes"] if node["node_type"] == "image_generation")
+
+    copy_config = {
+        "instruction": "未运行文案提示词：突出便携、防水和礼盒场景",
+        "tone": "高级克制",
+        "channel": "详情页主图",
+    }
+    image_config = {
+        "instruction": "未运行生图提示词：生成浅灰背景上的礼盒套装主图，光线柔和，主体居中",
+        "size": "1536x1024",
+    }
+    copy_updated = client.patch(f"/api/workflow-nodes/{copy_node['id']}", json={"config_json": copy_config})
+    assert copy_updated.status_code == 200
+    image_updated = client.patch(f"/api/workflow-nodes/{image_node['id']}", json={"config_json": image_config})
+    assert image_updated.status_code == 200
+    unrun_workflow = image_updated.json()
+    unrun_copy = next(node for node in unrun_workflow["nodes"] if node["id"] == copy_node["id"])
+    unrun_image = next(node for node in unrun_workflow["nodes"] if node["id"] == image_node["id"])
+    assert unrun_copy["status"] == "idle"
+    assert unrun_copy["output_json"] is None
+    assert unrun_image["status"] == "idle"
+    assert unrun_image["output_json"] is None
+
+    saved = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={
+            "title": "未运行提示词模板",
+            "node_ids": [copy_node["id"], image_node["id"]],
+        },
+    )
+    assert saved.status_code == 201
+    template_id = saved.json()["user_template_id"]
+    template_key = saved.json()["key"]
+
+    session = get_session_factory()()
+    try:
+        template = session.get(UserCanvasTemplate, template_id)
+        assert template is not None
+        template_nodes = {node["node_type"]: node for node in template.template_json["nodes"]}
+        assert template_nodes["copy_generation"]["config_json"] == copy_config
+        assert template_nodes["image_generation"]["config_json"] == image_config
+        assert not _contains_key(template.template_json, "output_json")
+    finally:
+        session.close()
+
+    before_apply = client.get(f"/api/products/{product_id}/workflow").json()
+    previous_node_ids = {node["id"] for node in before_apply["nodes"]}
+    applied = client.post(
+        f"/api/products/{product_id}/workflow/template-groups",
+        json={"template_key": template_key, "position_x": 1040, "position_y": 520},
+    )
+    assert applied.status_code == 201
+    created_nodes = [node for node in applied.json()["nodes"] if node["id"] not in previous_node_ids]
+    created_by_type = {node["node_type"]: node for node in created_nodes}
+    assert created_by_type["copy_generation"]["config_json"] == copy_config
+    assert created_by_type["copy_generation"]["status"] == "idle"
+    assert created_by_type["copy_generation"]["output_json"] is None
+    assert created_by_type["image_generation"]["config_json"] == image_config
+    assert created_by_type["image_generation"]["status"] == "idle"
+    assert created_by_type["image_generation"]["output_json"] is None
+
+
+def test_user_template_group_sanitizes_artifact_config_and_rejects_product_context(configured_env: Path) -> None:
+    from productflow_backend.infrastructure.db.models import UserCanvasTemplate
+    from productflow_backend.infrastructure.db.session import get_session_factory
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+    client = TestClient(app)
+    _login(client)
+    created = client.post(
+        "/api/products",
+        data={"name": "拒绝模板商品"},
+        files={"image": ("reject-user-template.png", _make_demo_image_bytes(), "image/png")},
+    )
+    assert created.status_code == 201
+    product_id = created.json()["id"]
+    workflow = client.get(f"/api/products/{product_id}/workflow").json()
+    context_node = next(node for node in workflow["nodes"] if node["node_type"] == "product_context")
+    reference_node = next(node for node in workflow["nodes"] if node["node_type"] == "reference_image")
+
+    empty_save = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={"title": "空模板", "node_ids": []},
+    )
+    assert empty_save.status_code == 400
+    assert empty_save.json()["detail"] == "请选择要保存的节点"
+
+    context_save = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={"title": "错误模板", "node_ids": [context_node["id"]]},
+    )
+    assert context_save.status_code == 400
+    assert context_save.json()["detail"] == "节点组模板不能包含商品资料节点"
+
+    polluted = client.patch(
+        f"/api/workflow-nodes/{reference_node['id']}",
+        json={
+            "config_json": {
+                "role": "reference",
+                "label": "保留标签",
+                "source_asset_ids": ["asset-1"],
+                "source_poster_variant_id": "poster-1",
+            }
+        },
+    )
+    assert polluted.status_code == 200
+    sanitized = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={"title": "清洗后模板", "node_ids": [reference_node["id"]]},
+    )
+    assert sanitized.status_code == 201
+
+    session = get_session_factory()()
+    try:
+        template = session.get(UserCanvasTemplate, sanitized.json()["user_template_id"])
+        assert template is not None
+        assert template.template_json["nodes"][0]["config_json"] == {"role": "reference", "label": "保留标签"}
+        assert not _contains_value(template.template_json, "asset-1")
+        assert not _contains_value(template.template_json, "poster-1")
+    finally:
+        session.close()
+
+    unsafe = client.patch(
+        f"/api/workflow-nodes/{reference_node['id']}",
+        json={"config_json": {"role": "reference", "unknown_external_id": "external-1"}},
+    )
+    assert unsafe.status_code == 200
+    rejected = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={"title": "未知产物模板", "node_ids": [reference_node["id"]]},
+    )
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "模板配置包含不可复用的产物数据"
+
+
+def test_user_template_group_ignores_node_outputs_when_saving(configured_env: Path) -> None:
+    from productflow_backend.infrastructure.db.models import UserCanvasTemplate, WorkflowNode
+    from productflow_backend.infrastructure.db.session import get_session_factory
+    from productflow_backend.presentation.api import create_app
+
+    app = create_app()
+    client = TestClient(app)
+    _login(client)
+    created = client.post(
+        "/api/products",
+        data={"name": "输出不入模板商品"},
+        files={"image": ("output-template.png", _make_demo_image_bytes(), "image/png")},
+    )
+    assert created.status_code == 201
+    product_id = created.json()["id"]
+    workflow = client.get(f"/api/products/{product_id}/workflow").json()
+    copy_node = next(node for node in workflow["nodes"] if node["node_type"] == "copy_generation")
+
+    session = get_session_factory()()
+    try:
+        node = session.get(WorkflowNode, copy_node["id"])
+        assert node is not None
+        node.output_json = {
+            "copy_set_id": "copy-artifact",
+            "poster_variant_id": "poster-artifact",
+            "generated_poster_variant_ids": ["poster-artifact"],
+            "filled_source_asset_ids": ["asset-artifact"],
+            "filled_reference_node_ids": ["node-artifact"],
+            "summary": "这些运行输出不应该进入模板",
+        }
+        session.commit()
+    finally:
+        session.close()
+
+    saved = client.post(
+        f"/api/products/{product_id}/workflow/user-template-groups",
+        json={"title": "只存配置", "node_ids": [copy_node["id"]]},
+    )
+    assert saved.status_code == 201
+    template_id = saved.json()["user_template_id"]
+
+    session = get_session_factory()()
+    try:
+        template = session.get(UserCanvasTemplate, template_id)
+        assert template is not None
+        assert not _contains_value(template.template_json, "copy-artifact")
+        assert not _contains_value(template.template_json, "poster-artifact")
+        assert not _contains_value(template.template_json, "asset-artifact")
+        assert not _contains_key(template.template_json, "output_json")
+        assert not _contains_key(template.template_json, "copy_set_id")
+        assert not _contains_key(template.template_json, "poster_variant_id")
+        assert not _contains_key(template.template_json, "generated_poster_variant_ids")
+    finally:
+        session.close()
+
+
+def _contains_key(value: object, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
+
+
+def _contains_value(value: object, expected: object) -> bool:
+    if value == expected:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_value(item, expected) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_value(item, expected) for item in value)
+    return False
+
+
 def test_image_generation_node_normalizes_custom_size_and_rejects_unsafe_dimensions(configured_env: Path) -> None:
     from productflow_backend.presentation.api import create_app
 

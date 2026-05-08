@@ -5,15 +5,18 @@ from sqlalchemy.orm import Session
 
 from productflow_backend.application.product_workflows import (
     apply_node_group_template_to_workflow,
+    archive_user_canvas_template,
     bind_workflow_node_image,
     cancel_product_workflow_run,
+    create_user_canvas_template_from_workflow_nodes,
     create_workflow_edge,
     create_workflow_node,
     delete_workflow_edge,
     delete_workflow_node,
     get_or_create_product_workflow,
     get_product_workflow_status,
-    list_builtin_canvas_templates,
+    list_canvas_templates,
+    rename_user_canvas_template,
     retry_product_workflow_run,
     submit_product_workflow_run,
     update_workflow_copy_set,
@@ -26,16 +29,20 @@ from productflow_backend.presentation.schemas.product_workflows import (
     ApplyWorkflowTemplateGroupRequest,
     BindWorkflowNodeImageRequest,
     CanvasTemplateListResponse,
+    CanvasTemplateSummaryResponse,
+    CreateUserTemplateGroupRequest,
     CreateWorkflowEdgeRequest,
     CreateWorkflowNodeRequest,
     ProductWorkflowResponse,
     ProductWorkflowStatusResponse,
     RunWorkflowRequest,
+    UpdateUserTemplateGroupRequest,
     UpdateWorkflowCopySetRequest,
     UpdateWorkflowNodeRequest,
     serialize_canvas_template_summary,
     serialize_product_workflow,
     serialize_product_workflow_status,
+    serialize_user_canvas_template_summary,
 )
 from productflow_backend.presentation.upload_validation import read_validated_image_upload
 
@@ -64,9 +71,58 @@ def get_product_workflow_status_endpoint(
 
 
 @router.get("/workflow/canvas-templates", response_model=CanvasTemplateListResponse)
-def list_canvas_templates_endpoint() -> CanvasTemplateListResponse:
-    templates = [serialize_canvas_template_summary(template) for template in list_builtin_canvas_templates()]
+def list_canvas_templates_endpoint(session: Session = Depends(get_session)) -> CanvasTemplateListResponse:
+    templates = [serialize_canvas_template_summary(template) for template in list_canvas_templates(session)]
     return CanvasTemplateListResponse(items=templates)
+
+
+@router.post(
+    "/products/{product_id}/workflow/user-template-groups",
+    response_model=CanvasTemplateSummaryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_user_template_group_endpoint(
+    product_id: str,
+    payload: CreateUserTemplateGroupRequest,
+    session: Session = Depends(get_session),
+) -> CanvasTemplateSummaryResponse:
+    try:
+        template = create_user_canvas_template_from_workflow_nodes(
+            session,
+            product_id=product_id,
+            title=payload.title,
+            description=payload.description,
+            node_ids=payload.node_ids,
+        )
+    except ValueError as exc:
+        raise_value_error_as_http(exc)
+    return serialize_user_canvas_template_summary(template)
+
+
+@router.patch("/workflow/user-template-groups/{template_id}", response_model=CanvasTemplateSummaryResponse)
+def update_user_template_group_endpoint(
+    template_id: str,
+    payload: UpdateUserTemplateGroupRequest,
+    session: Session = Depends(get_session),
+) -> CanvasTemplateSummaryResponse:
+    try:
+        template = rename_user_canvas_template(
+            session,
+            template_id=template_id,
+            title=payload.title,
+            description=payload.description,
+        )
+    except ValueError as exc:
+        raise_value_error_as_http(exc)
+    return serialize_user_canvas_template_summary(template)
+
+
+@router.delete("/workflow/user-template-groups/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_user_template_group_endpoint(template_id: str, session: Session = Depends(get_session)) -> None:
+    try:
+        archive_user_canvas_template(session, template_id=template_id)
+    except ValueError as exc:
+        raise_value_error_as_http(exc)
 
 
 @router.post(

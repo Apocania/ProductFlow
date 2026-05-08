@@ -62,6 +62,24 @@
 - Built-in `node_group` templates may declare `default_external_connections` from `existing_product_context` to template
   copy/image node keys. Applying the template must materialize those declarations as normal visible `workflow_edges`.
   They are not hidden suggestions or frontend-only hints.
+- User-saved node-group templates are persisted in `user_canvas_templates`, not in the built-in template constant list.
+  Their stable catalog key is `user:{id}`, `kind` is `node_group`, `schema_version` is `1`, and `template_json.version`
+  must also be `1`.
+- User-saved templates are converted back into the same `CanvasTemplate` contract with `source == "user"` and
+  `user_template_id` populated. The existing catalog endpoint returns built-in and non-archived user templates together.
+- Saving a user template from workflow nodes must capture only reusable intent: node type, title, relative position,
+  normalized editable `config_json`, and edges whose source and target are both selected nodes. It must not read or persist
+  `output_json`, workflow run rows, node run rows, artifact ids, file URLs/paths, product ids, workflow ids, or database
+  node ids.
+- User templates must reject empty selections, duplicate node ids, missing active workflows, nodes outside the current
+  active workflow, and selections containing `product_context`. Known artifact-specific config fields such as
+  `source_asset_ids`, `source_poster_variant_id`, `copy_set_id`, `poster_variant_id`,
+  `generated_poster_variant_ids`, `filled_source_asset_ids`, and image-session asset ids must be stripped while preserving
+  reusable fields such as `role`, `label`, `instruction`, `size`, and normalized `tool_options`. Unknown config keys ending
+  in `_id`, `_ids`, `_url`, or `_path` must be rejected so new artifact references do not silently enter templates.
+- Applying a user template must go through the same node-group application path as built-in templates and must create
+  ordinary persisted workflow nodes and edges. Archived user templates must not appear in the catalog and must not be
+  applicable by key.
 - Built-in templates must cover real ecommerce image-production scenarios: main image, SKU/variant, model/lifestyle,
   scene, detail/material, campaign/promotion, and white-background output.
 - Templates must not introduce new workflow node types by enum drift. When a new `WorkflowNodeType` is added elsewhere,
@@ -92,6 +110,15 @@
 - Default external connection targets a node that is not `copy_generation` or `image_generation` ->
   `BusinessValidationError("画布模板默认外部连接只能接入文案或生图节点")`.
 - Unknown built-in template key -> `ValueError("画布模板不存在")`.
+- User template save with no selected nodes -> `BusinessValidationError("请选择要保存的节点")`.
+- User template save with duplicate node ids -> `BusinessValidationError("保存模板的节点不能重复")`.
+- User template save before an active workflow exists -> `BusinessValidationError("需要先创建或打开画布后才能保存模板")`.
+- User template save with nodes outside the current active workflow ->
+  `BusinessValidationError("保存模板包含不属于当前画布的节点")`.
+- User template save containing `product_context` -> `BusinessValidationError("节点组模板不能包含商品资料节点")`.
+- User template save with unknown artifact-shaped config keys ->
+  `BusinessValidationError("模板配置包含不可复用的产物数据")`.
+- Archived or missing user template key -> `BusinessValidationError("画布模板不存在")`.
 
 ### 5. Good/Base/Bad Cases
 
@@ -100,12 +127,18 @@
 - Good: campaign template contains campaign prompt defaults, poster image size, and an explicit generated output slot.
 - Good: node-group template appends a reusable group by materializing normal workflow nodes and remapping template keys to
   database node IDs before creating edges.
+- Good: saving a selected copy/image/reference chain stores relative node positions and internal selected edges, appears in
+  the template catalog with `source == "user"`, and applying `user:{id}` creates normal workflow rows with empty outputs.
+- Good: saving a reference node that has been filled with an image strips `source_asset_ids` and
+  `source_poster_variant_id` while preserving `role` and `label`.
 - Base: a template can include suggested connections for optional palette guidance without requiring those suggestions to
   be materialized as edges. Default external connections are a separate executable contract and are materialized.
 - Base: a template can include multiple output slots when one generation node is expected to fill multiple downstream
   `reference_image` nodes.
 - Bad: a template stores a hidden chain in frontend state and creates only one placeholder node in the database.
 - Bad: a template uses a new enum value before the explicit template allowlist and tests are updated.
+- Bad: a user template stores output JSON, run results, source asset ids, poster ids, image-session ids, product ids, or
+  workflow ids and reuses those artifacts when applied to another product.
 
 ### 6. Tests Required
 
@@ -123,6 +156,9 @@
 - When a template application API is added, integration tests must assert that applying a template persists real
   `workflow_nodes` and `workflow_edges`, preserves DAG validation, and keeps prompt/size defaults editable through normal
   node update endpoints.
+- User-template tests must cover create/list/rename/archive/apply, application of `user:{id}` as real workflow rows, hiding
+  archived templates from the catalog, stripping known artifact config fields, rejecting unknown artifact-shaped config
+  keys, and ignoring existing `output_json` / run outputs.
 
 ### 7. Wrong vs Correct
 

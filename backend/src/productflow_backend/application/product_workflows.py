@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from productflow_backend.application import product_workflow_graph
-from productflow_backend.application.canvas_templates import list_builtin_canvas_templates
 from productflow_backend.application.product_workflow_execution import (
     WorkflowRunKickoff,
     cancel_product_workflow_run,
@@ -24,6 +23,12 @@ from productflow_backend.application.product_workflow_mutations import (
     update_workflow_node,
     upload_workflow_node_image,
 )
+from productflow_backend.application.user_canvas_templates import (
+    archive_user_canvas_template,
+    create_user_canvas_template_from_workflow_nodes,
+    list_canvas_templates,
+    rename_user_canvas_template,
+)
 from productflow_backend.infrastructure.db.models import ProductWorkflow, WorkflowRun
 
 
@@ -38,7 +43,9 @@ def get_product_workflow_status(session, product_id: str) -> product_workflow_gr
 __all__ = [
     "WorkflowRunKickoff",
     "apply_node_group_template_to_workflow",
+    "archive_user_canvas_template",
     "bind_workflow_node_image",
+    "create_user_canvas_template_from_workflow_nodes",
     "cancel_product_workflow_run",
     "create_workflow_edge",
     "create_workflow_node",
@@ -48,9 +55,10 @@ __all__ = [
     "get_or_create_product_workflow",
     "get_product_workflow_status",
     "latest_workflow_runs",
-    "list_builtin_canvas_templates",
+    "list_canvas_templates",
     "mark_workflow_run_enqueue_failed",
     "retry_product_workflow_run",
+    "rename_user_canvas_template",
     "run_product_workflow",
     "start_product_workflow_run",
     "submit_product_workflow_run",

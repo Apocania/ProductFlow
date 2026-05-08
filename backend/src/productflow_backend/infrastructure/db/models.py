@@ -60,6 +60,22 @@ class AppSetting(Base, TimestampMixin):
     value: Mapped[str] = mapped_column(Text)
 
 
+class UserCanvasTemplate(Base, TimestampMixin):
+    """用户保存的可复用画布节点组模板。"""
+
+    __tablename__ = "user_canvas_templates"
+    __table_args__ = (Index("ix_user_canvas_templates_archived_at", "archived_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(String(40), default="node_group")
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    template_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Product(Base, TimestampMixin):
     __tablename__ = "products"
 

@@ -316,6 +316,8 @@ export interface CanvasTemplateSummary {
   kind: CanvasTemplateKind;
   title: string;
   description: string;
+  source: "builtin" | "user";
+  user_template_id: string | null;
   scenario: CanvasTemplateScenarioMetadata;
   preview_nodes: CanvasTemplatePreviewNode[];
   preview_edges: CanvasTemplatePreviewEdge[];
@@ -333,6 +335,17 @@ export interface ApplyWorkflowTemplateGroupInput {
   template_key: string;
   position_x: number;
   position_y: number;
+}
+
+export interface CreateUserTemplateGroupInput {
+  title: string;
+  description?: string;
+  node_ids: string[];
+}
+
+export interface UpdateUserTemplateGroupInput {
+  title?: string;
+  description?: string;
 }
 
 export interface CopySetUpdateRequest {

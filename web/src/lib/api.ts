@@ -1,5 +1,6 @@
 import type {
   ApplyWorkflowTemplateGroupInput,
+  CanvasTemplateSummary,
   CanvasTemplateListResponse,
   ConfigResponse,
   ConfigUpdateRequest,
@@ -8,6 +9,7 @@ import type {
   GalleryEntry,
   GalleryEntryListResponse,
   GenerationQueueOverview,
+  CreateUserTemplateGroupInput,
   CreateProductInput,
   ImageSessionDetail,
   ImageSessionListResponse,
@@ -22,6 +24,7 @@ import type {
   RuntimeConfig,
   SettingsLockState,
   SessionState,
+  UpdateUserTemplateGroupInput,
 } from "./types";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
@@ -261,6 +264,23 @@ export const api = {
     return request(`/api/products/${productId}/workflow/template-groups`, {
       method: "POST",
       body: JSON.stringify(input),
+    });
+  },
+  createUserTemplateGroup(productId: string, input: CreateUserTemplateGroupInput): Promise<CanvasTemplateSummary> {
+    return request(`/api/products/${productId}/workflow/user-template-groups`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+  updateUserTemplateGroup(templateId: string, input: UpdateUserTemplateGroupInput): Promise<CanvasTemplateSummary> {
+    return request(`/api/workflow/user-template-groups/${templateId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  },
+  archiveUserTemplateGroup(templateId: string): Promise<void> {
+    return request(`/api/workflow/user-template-groups/${templateId}`, {
+      method: "DELETE",
     });
   },
   createWorkflowNode(

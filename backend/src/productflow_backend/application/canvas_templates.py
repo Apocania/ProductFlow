@@ -113,6 +113,8 @@ class CanvasTemplate(BaseModel):
     kind: TemplateKind
     title: str
     description: str
+    source: Literal["builtin", "user"] = "builtin"
+    user_template_id: str | None = None
     scenario: CanvasTemplateScenarioMetadata
     nodes: tuple[CanvasTemplateNodeSpec, ...]
     edges: tuple[CanvasTemplateEdgeSpec, ...] = ()

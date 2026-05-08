@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from productflow_backend.application import product_workflow_graph
-from productflow_backend.application.canvas_templates import CanvasTemplateNodeSpec, get_builtin_canvas_template
+from productflow_backend.application.canvas_templates import CanvasTemplateNodeSpec
 from productflow_backend.application.image_generation_core import normalize_image_generation_tool_options
 from productflow_backend.application.product_workflow_artifacts import (
     fill_reference_node,
@@ -19,6 +19,7 @@ from productflow_backend.application.product_workflow_context import image_size_
 from productflow_backend.application.product_workflow_templates import materialize_canvas_template_graph
 from productflow_backend.application.time import now_utc
 from productflow_backend.application.use_cases import update_copy_set
+from productflow_backend.application.user_canvas_templates import get_canvas_template
 from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GENERATION_TASK_CONTRACT
 from productflow_backend.domain.enums import (
     SourceAssetKind,
@@ -215,14 +216,18 @@ def apply_node_group_template_to_workflow(
     position_x: int,
     position_y: int,
 ) -> ProductWorkflow:
-    template = get_builtin_canvas_template(template_key.strip())
+    template = get_canvas_template(session, template_key.strip())
     if template.kind != "node_group":
         raise BusinessValidationError("画布内只能添加节点组模板，完整画布模板请在创建商品时选择")
     workflow = product_workflow_graph.get_active_workflow(session, product_id)
     if workflow is None:
         product_workflow_graph.get_product_or_raise(session, product_id)
         raise BusinessValidationError("需要先创建或打开画布后才能添加节点组")
-    external_source_nodes = {"existing_product_context": _single_product_context_node(workflow)}
+    external_source_nodes = (
+        {"existing_product_context": _single_product_context_node(workflow)}
+        if template.default_external_connections
+        else {}
+    )
     position_x_offset, position_y_offset = _node_group_template_offsets(
         template_nodes=template.nodes,
         existing_nodes=list(workflow.nodes),

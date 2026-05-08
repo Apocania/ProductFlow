@@ -3,9 +3,12 @@ import {
   ImageIcon,
   ImagePlus,
   Loader2,
+  Pencil,
   Plus,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
+import { useState } from "react";
 
 import type { CanvasTemplateSummary } from "../../lib/types";
 import { NODE_LABELS } from "./constants";
@@ -25,6 +28,9 @@ interface TemplateGroupsPanelProps {
   applyBusy: boolean;
   applyingTemplateKey: string | null;
   onApplyTemplate: (template: CanvasTemplateSummary) => void;
+  userTemplateBusy: boolean;
+  onRenameUserTemplate: (template: CanvasTemplateSummary, title: string) => void;
+  onArchiveUserTemplate: (template: CanvasTemplateSummary) => void;
 }
 
 function summarizeOutput(template: CanvasTemplateSummary): string {
@@ -263,7 +269,13 @@ export function TemplateGroupsPanel({
   applyBusy,
   applyingTemplateKey,
   onApplyTemplate,
+  userTemplateBusy,
+  onRenameUserTemplate,
+  onArchiveUserTemplate,
 }: TemplateGroupsPanelProps) {
+  const [editingTemplateKey, setEditingTemplateKey] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
   if (isLoading) {
     return (
       <div className="flex min-h-[180px] items-center justify-center text-zinc-400">
@@ -294,6 +306,8 @@ export function TemplateGroupsPanel({
         const templateBusy = applyBusy && applyingTemplateKey === template.key;
         const referenceLabel = summarizeReferenceInput(template);
         const externalLabels = externalConnectionLabels(template);
+        const isUserTemplate = template.source === "user" && Boolean(template.user_template_id);
+        const editing = editingTemplateKey === template.key;
         return (
           <article
             key={template.key}
@@ -309,6 +323,9 @@ export function TemplateGroupsPanel({
                   </h3>
                   <span className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600">
                     {summarizeScenario(template)}
+                  </span>
+                  <span className="shrink-0 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">
+                    {isUserTemplate ? "自定义" : "内置"}
                   </span>
                 </div>
                 <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
@@ -330,20 +347,84 @@ export function TemplateGroupsPanel({
                   ))}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => onApplyTemplate(template)}
-                disabled={structureBusy || applyBusy}
-                className="inline-flex h-8 shrink-0 items-center rounded-md bg-zinc-950 px-2.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {templateBusy ? (
-                  <Loader2 size={13} className="mr-1.5 animate-spin" />
-                ) : (
-                  <Plus size={13} className="mr-1.5" />
-                )}
-                添加
-              </button>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {isUserTemplate ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingTemplateKey(template.key);
+                        setEditingTitle(template.title);
+                      }}
+                      disabled={userTemplateBusy}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="重命名模板"
+                      title="重命名模板"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onArchiveUserTemplate(template)}
+                      disabled={userTemplateBusy}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="删除模板"
+                      title="删除模板"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onApplyTemplate(template)}
+                  disabled={structureBusy || applyBusy}
+                  className="inline-flex h-8 items-center rounded-md bg-zinc-950 px-2.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {templateBusy ? (
+                    <Loader2 size={13} className="mr-1.5 animate-spin" />
+                  ) : (
+                    <Plus size={13} className="mr-1.5" />
+                  )}
+                  添加
+                </button>
+              </div>
             </div>
+            {editing ? (
+              <form
+                className="flex items-center gap-2 border-t border-zinc-100 px-3 py-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const title = editingTitle.trim();
+                  if (!title) {
+                    return;
+                  }
+                  onRenameUserTemplate(template, title);
+                  setEditingTemplateKey(null);
+                }}
+              >
+                <input
+                  value={editingTitle}
+                  onChange={(event) => setEditingTitle(event.target.value)}
+                  className="h-8 min-w-0 flex-1 rounded-md border border-zinc-200 px-2 text-xs text-zinc-900 outline-none focus:border-indigo-300"
+                  maxLength={255}
+                />
+                <button
+                  type="button"
+                  onClick={() => setEditingTemplateKey(null)}
+                  className="h-8 rounded-md px-2 text-xs font-medium text-zinc-500 hover:bg-zinc-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={userTemplateBusy || !editingTitle.trim()}
+                  className="h-8 rounded-md bg-zinc-950 px-2.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  保存
+                </button>
+              </form>
+            ) : null}
           </article>
         );
       })}

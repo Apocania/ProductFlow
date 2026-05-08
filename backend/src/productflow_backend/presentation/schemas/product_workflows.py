@@ -16,6 +16,7 @@ from productflow_backend.domain.durable_generation_tasks import WORKFLOW_RUN_GEN
 from productflow_backend.domain.enums import WorkflowNodeStatus, WorkflowNodeType, WorkflowRunStatus
 from productflow_backend.infrastructure.db.models import (
     ProductWorkflow,
+    UserCanvasTemplate,
     WorkflowEdge,
     WorkflowNode,
     WorkflowNodeRun,
@@ -195,6 +196,8 @@ class CanvasTemplateSummaryResponse(BaseModel):
     kind: TemplateKind
     title: str
     description: str
+    source: str
+    user_template_id: str | None = None
     scenario: CanvasTemplateScenarioResponse
     preview_nodes: list[CanvasTemplatePreviewNodeResponse]
     preview_edges: list[CanvasTemplatePreviewEdgeResponse]
@@ -246,6 +249,17 @@ class ApplyWorkflowTemplateGroupRequest(BaseModel):
     template_key: str = Field(min_length=1, max_length=120)
     position_x: int = 0
     position_y: int = 0
+
+
+class CreateUserTemplateGroupRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=1000)
+    node_ids: list[str] = Field(default_factory=list)
+
+
+class UpdateUserTemplateGroupRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=1000)
 
 
 class RunWorkflowRequest(BaseModel):
@@ -386,6 +400,8 @@ def serialize_canvas_template_summary(template: CanvasTemplate) -> CanvasTemplat
         kind=template.kind,
         title=template.title,
         description=template.description,
+        source=template.source,
+        user_template_id=template.user_template_id,
         scenario=CanvasTemplateScenarioResponse(
             scenario=template.scenario.scenario,
             title=template.scenario.title,
@@ -445,6 +461,12 @@ def serialize_canvas_template_summary(template: CanvasTemplate) -> CanvasTemplat
             for item in template.default_external_connections
         ],
     )
+
+
+def serialize_user_canvas_template_summary(template: UserCanvasTemplate) -> CanvasTemplateSummaryResponse:
+    from productflow_backend.application.user_canvas_templates import user_canvas_template_to_canvas_template
+
+    return serialize_canvas_template_summary(user_canvas_template_to_canvas_template(template))
 
 
 def serialize_product_workflow_status(snapshot: ProductWorkflowStatusSnapshot) -> ProductWorkflowStatusResponse:

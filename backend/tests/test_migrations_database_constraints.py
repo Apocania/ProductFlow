@@ -25,6 +25,7 @@ from productflow_backend.infrastructure.db.models import (
     ImageSessionGenerationTask,
     PosterVariant,
     SourceAsset,
+    UserCanvasTemplate,
     WorkflowNode,
     WorkflowNodeRun,
     WorkflowRun,
@@ -69,6 +70,30 @@ def test_gallery_entry_model_matches_migration_contract() -> None:
     assert foreign_keys["image_session_round_id"].ondelete == "SET NULL"
 
 
+def test_user_canvas_template_model_matches_migration_contract() -> None:
+    table = UserCanvasTemplate.__table__
+    assert table.c.id.type.length == 36
+    assert not table.c.id.nullable
+    assert table.c.id.default is not None
+    assert table.c.id.default.arg.__name__ == new_id.__name__
+    assert table.c.key.type.length == 80
+    assert not table.c.key.nullable
+    assert table.c.title.type.length == 255
+    assert not table.c.title.nullable
+    assert table.c.description.nullable
+    assert table.c.kind.type.length == 40
+    assert not table.c.kind.nullable
+    assert not table.c.schema_version.nullable
+    assert not table.c.template_json.nullable
+    assert table.c.archived_at.nullable
+    assert not table.c.created_at.nullable
+    assert not table.c.updated_at.nullable
+    assert {constraint.name for constraint in table.constraints if isinstance(constraint, sa.UniqueConstraint)} == {
+        None
+    }
+    assert {index.name for index in table.indexes} == {"ix_user_canvas_templates_archived_at"}
+
+
 def test_alembic_upgrade_head_supports_sqlite(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "alembic.db"
     storage_root = tmp_path / "storage"
@@ -85,6 +110,48 @@ def test_alembic_upgrade_head_supports_sqlite(tmp_path: Path, monkeypatch) -> No
     command.upgrade(config, "head")
 
     assert database_path.exists()
+    get_settings.cache_clear()
+
+
+def test_user_canvas_template_migration_schema_and_downgrade_support_sqlite(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "user-canvas-template-migration.db"
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("ADMIN_ACCESS_KEY", "super-secret-admin-key")
+    monkeypatch.setenv("SESSION_SECRET", "super-secret-session-key-123")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/9")
+    monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
+    get_settings.cache_clear()
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    command.upgrade(config, "head")
+
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    inspector = sa.inspect(engine)
+    assert "user_canvas_templates" in inspector.get_table_names()
+    columns = {column["name"]: column for column in inspector.get_columns("user_canvas_templates")}
+    assert columns["id"]["nullable"] is False
+    assert columns["key"]["nullable"] is False
+    assert columns["title"]["nullable"] is False
+    assert columns["description"]["nullable"] is True
+    assert columns["kind"]["nullable"] is False
+    assert columns["schema_version"]["nullable"] is False
+    assert columns["template_json"]["nullable"] is False
+    assert columns["archived_at"]["nullable"] is True
+    assert columns["created_at"]["nullable"] is False
+    assert columns["updated_at"]["nullable"] is False
+    assert {constraint["name"] for constraint in inspector.get_unique_constraints("user_canvas_templates")} == {None}
+    indexes = {index["name"]: index for index in inspector.get_indexes("user_canvas_templates")}
+    assert indexes["ix_user_canvas_templates_archived_at"]["column_names"] == ["archived_at"]
+
+    engine.dispose()
+    command.downgrade(config, "20260507_0021")
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    inspector = sa.inspect(engine)
+    assert "user_canvas_templates" not in inspector.get_table_names()
+    engine.dispose()
     get_settings.cache_clear()
 
 
