@@ -109,7 +109,7 @@ PostgreSQL 是元数据和运行状态的权威存储；Redis/Dramatiq 只负责
 
 - `product_context`：一个商品工作流的商品资料入口。
 - `reference_image`：单张当前参考图槽位；手动上传或上游生图填充会替换当前图，旧素材保留在商品历史/素材表。
-- `copy_generation`：文案生成和可编辑文案字段。
+- `copy_generation`：文案生成和可编辑结构化文案；旧四字段作为派生兼容字段保留。
 - `image_generation`：生图触发/配置节点；图片产物填充到下游参考图节点，而不是在生图节点本身展示。
 
 画布模板的边界：
@@ -155,7 +155,7 @@ ProductFlow 把模型能力按模态拆分。
 文本 provider 位于 `infrastructure/text/`，统一接口为：
 
 - `generate_brief(product_input)`
-- `generate_copy(brief, product_input)`
+- `generate_copy(product_input, brief, config, reference_images=None)`
 
 当前实现：
 

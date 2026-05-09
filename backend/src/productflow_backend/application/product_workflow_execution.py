@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +18,11 @@ from sqlalchemy.orm import Session
 from productflow_backend.application import product_workflow_graph
 from productflow_backend.application.admission import ensure_generation_capacity, generation_running_capacity_available
 from productflow_backend.application.contracts import PosterGenerationInput, ProductInput
+from productflow_backend.application.copy_payloads import (
+    copy_payload_to_legacy_fields,
+    normalize_copy_node_config,
+    normalize_copy_payload,
+)
 from productflow_backend.application.image_generation_core import build_stored_image_reference_payload
 from productflow_backend.application.image_generation_failures import safe_image_generation_failure_reason
 from productflow_backend.application.product_workflow_artifacts import (
@@ -841,10 +847,12 @@ def _execute_copy_generation(
     )
     incoming_context = collect_incoming_context(workflow, node.id)
     reference_images = reference_image_inputs_for_copy(session, workflow=workflow, node_id=node.id, storage=storage)
+    config = normalize_copy_node_config(node.config_json)
     instruction = instruction_with_upstream_text(
-        optional_config_text(node.config_json, "instruction"),
+        config.instruction,
         incoming_context,
     )
+    config = config.model_copy(update={"instruction": instruction})
     provider = dependencies.text_provider()
     brief_payload, brief_model = provider.generate_brief(product_input)
     brief = CreativeBrief(
@@ -857,24 +865,28 @@ def _execute_copy_generation(
     session.add(brief)
     session.flush()
 
-    copy_payload, copy_model = provider.generate_copy(
+    copy_payload, copy_model = _generate_copy_with_provider(
+        provider,
         product_input,
         brief_payload,
-        instruction=instruction,
+        config=config,
         reference_images=reference_images,
     )
+    legacy_copy = copy_payload_to_legacy_fields(copy_payload)
     copy_set = CopySet(
         product_id=product.id,
         creative_brief_id=brief.id,
         status=CopyStatus.DRAFT,
-        title=copy_payload.title,
-        selling_points=copy_payload.selling_points,
-        poster_headline=copy_payload.poster_headline,
-        cta=copy_payload.cta,
-        model_title=copy_payload.title,
-        model_selling_points=copy_payload.selling_points,
-        model_poster_headline=copy_payload.poster_headline,
-        model_cta=copy_payload.cta,
+        title=legacy_copy.title,
+        selling_points=legacy_copy.selling_points,
+        poster_headline=legacy_copy.poster_headline,
+        cta=legacy_copy.cta,
+        structured_payload=copy_payload.model_dump(mode="json"),
+        model_title=legacy_copy.title,
+        model_selling_points=legacy_copy.selling_points,
+        model_poster_headline=legacy_copy.poster_headline,
+        model_cta=legacy_copy.cta,
+        model_structured_payload=copy_payload.model_dump(mode="json"),
         provider_name=provider.provider_name,
         model_name=copy_model,
         prompt_version=provider.prompt_version,
@@ -891,6 +903,31 @@ def _execute_copy_generation(
     }
     output["context_sources"] = incoming_context.text_sources[:8]
     return output
+
+
+def _generate_copy_with_provider(
+    provider: Any,
+    product_input: ProductInput,
+    brief_payload: Any,
+    *,
+    config: Any,
+    reference_images: list[Any],
+) -> tuple[Any, str]:
+    signature = inspect.signature(provider.generate_copy)
+    if "config" in signature.parameters:
+        return provider.generate_copy(
+            product_input,
+            brief_payload,
+            config=config,
+            reference_images=reference_images,
+        )
+    legacy_payload, model_name = provider.generate_copy(
+        product_input,
+        brief_payload,
+        instruction=config.instruction,
+        reference_images=reference_images,
+    )
+    return normalize_copy_payload(legacy_payload.model_dump(), fallback_purpose=config.purpose), model_name
 
 
 def _execute_image_generation(

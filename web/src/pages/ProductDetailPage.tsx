@@ -639,14 +639,8 @@ export function ProductDetailPage() {
   const updateNodeCopyMutation = useMutation({
     mutationFn: (node: WorkflowNode) =>
       api.updateWorkflowNodeCopy(node.id, {
-        title: draft.copyTitle,
-        selling_points: draft.copySellingPoints
-          .split("\n")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        poster_headline: draft.copyPosterHeadline,
-        cta: draft.copyCta,
-    }),
+        ...(draft.copyStructuredPayload ? { structured_payload: draft.copyStructuredPayload } : {}),
+      }),
     onSuccess: async (nextWorkflow) => {
       setError("");
       queryClient.setQueryData(["product-workflow", productId], nextWorkflow);
@@ -895,11 +889,7 @@ export function ProductDetailPage() {
     setSaveStatus("saving");
     await updateNodeConfigMutation.mutateAsync(selectedNode);
     if (selectedCopyHasOutput) {
-      const sellingPoints = draft.copySellingPoints
-        .split("\n")
-        .map((item) => item.trim())
-        .filter(Boolean);
-      if (draft.copyTitle.trim() && draft.copyPosterHeadline.trim() && draft.copyCta.trim() && sellingPoints.length) {
+      if (draft.copyStructuredPayload?.summary.trim()) {
         await updateNodeCopyMutation.mutateAsync(selectedNode);
       }
     }

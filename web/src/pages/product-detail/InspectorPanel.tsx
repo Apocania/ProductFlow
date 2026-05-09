@@ -9,6 +9,7 @@ import {
   Loader2,
   OctagonX,
   Play,
+  Plus,
   Trash2,
   Upload,
   XCircle,
@@ -22,7 +23,15 @@ import { PromptPreviewDialog, type PromptPreview } from "../../components/Prompt
 import type { DownloadableImage } from "../../lib/image-downloads";
 import type { ImageSizeOption } from "../../lib/imageSizes";
 import { formatDateTime, formatPrice } from "../../lib/format";
-import type { ImageToolOptionKey, ProductDetail, ProductWorkflow, WorkflowNode } from "../../lib/types";
+import type {
+  CopyBlock,
+  CopyPayloadV2,
+  CopySection,
+  ImageToolOptionKey,
+  ProductDetail,
+  ProductWorkflow,
+  WorkflowNode,
+} from "../../lib/types";
 import { IMAGE_PREVIEW_SURFACE_CLASS_NAME, NODE_LABELS } from "./constants";
 import { DownloadLink } from "./ImageDownloadComponents";
 import { getNodeImageDownload } from "./imageDownloads";
@@ -43,6 +52,9 @@ const SAVE_STATUS_CLASS_NAMES: Record<SaveStatus, string> = {
   saved: "border-emerald-200 bg-emerald-50 text-emerald-700",
   failed: "border-red-200 bg-red-50 text-red-700",
 };
+
+const ADD_COPY_FIELD_BUTTON_CLASS_NAME =
+  "inline-flex items-center gap-1 rounded-md border border-dashed border-zinc-200 px-2 py-1 text-[11px] font-medium text-zinc-500 transition-colors hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-700";
 
 interface InspectorPanelProps {
   product: ProductDetail;
@@ -467,6 +479,7 @@ function CopyNodeInspector({
   const hasCopy = Boolean(
     node.output_json && outputText(node.output_json, "copy_set_id"),
   );
+  const copyPayload = draft.copyStructuredPayload;
   return (
     <div className="space-y-3">
       <TextArea
@@ -503,57 +516,312 @@ function CopyNodeInspector({
           <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
             编辑文案
           </div>
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
-              标题
-            </span>
-            <input
-              value={draft.copyTitle}
-              onChange={(event) =>
-                onDraftChange({ ...draft, copyTitle: event.target.value })
-              }
-              className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs outline-none focus:border-zinc-900 focus:ring-1 focus:ring-zinc-900"
+          {copyPayload ? (
+            <StructuredCopyEditor
+              payload={copyPayload}
+              onChange={(copyStructuredPayload) => onDraftChange({ ...draft, copyStructuredPayload })}
             />
-          </label>
-          <TextArea
-            label="卖点"
-            value={draft.copySellingPoints}
-            onChange={(value) =>
-              onDraftChange({ ...draft, copySellingPoints: value })
-            }
-          />
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
-              海报标题
-            </span>
-            <input
-              value={draft.copyPosterHeadline}
-              onChange={(event) =>
-                onDraftChange({
-                  ...draft,
-                  copyPosterHeadline: event.target.value,
-                })
-              }
-              className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs outline-none focus:border-zinc-900 focus:ring-1 focus:ring-zinc-900"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
-              CTA
-            </span>
-            <input
-              value={draft.copyCta}
-              onChange={(event) =>
-                onDraftChange({ ...draft, copyCta: event.target.value })
-              }
-              className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs outline-none focus:border-zinc-900 focus:ring-1 focus:ring-zinc-900"
-            />
-          </label>
+          ) : null}
+          <DerivedCopyFields draft={draft} />
           <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] leading-5 text-zinc-500">
             文案编辑会自动保存；运行前也会先同步当前草稿。
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function StructuredCopyEditor({
+  payload,
+  onChange,
+}: {
+  payload: CopyPayloadV2;
+  onChange: (payload: CopyPayloadV2) => void;
+}) {
+  const content = payload.content;
+  return (
+    <div className="space-y-3">
+      <TextArea
+        label="摘要"
+        value={payload.summary}
+        onChange={(summary) => onChange({ ...payload, summary })}
+        minRows={1}
+        maxRows={6}
+      />
+      {content.kind === "freeform" ? (
+        <TextArea
+          label="正文"
+          value={content.text}
+          onChange={(text) => onChange({ ...payload, content: { kind: "freeform", text } })}
+          minRows={3}
+          maxRows={18}
+        />
+      ) : null}
+      {content.kind === "blocks" ? (
+        <div className="space-y-2">
+          {content.blocks.map((block, index) => (
+            <CopyBlockEditor
+              key={block.id}
+              block={block}
+              onChange={(nextBlock) => {
+                const blocks = [...content.blocks];
+                blocks[index] = nextBlock;
+                onChange({ ...payload, content: { kind: "blocks", blocks } });
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
+      {content.kind === "layout_brief" ? (
+        <div className="space-y-2">
+          {content.sections.map((section, index) => (
+            <CopySectionEditor
+              key={section.id}
+              section={section}
+              onChange={(nextSection) => {
+                const sections = [...content.sections];
+                sections[index] = nextSection;
+                onChange({ ...payload, content: { kind: "layout_brief", sections } });
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
+      <OptionalTextArea
+        label="视觉建议"
+        value={payload.visual_guidance?.composition_hint ?? ""}
+        addLabel="添加视觉建议"
+        placeholder="补充画面构图、文字层级、留白等建议"
+        onChange={(composition_hint) =>
+          onChange({
+            ...payload,
+            visual_guidance: {
+              main_message: payload.visual_guidance?.main_message ?? "",
+              hierarchy: payload.visual_guidance?.hierarchy ?? [],
+              composition_hint,
+              text_density: payload.visual_guidance?.text_density ?? "medium",
+              avoid: payload.visual_guidance?.avoid ?? [],
+            },
+          })
+        }
+      />
+    </div>
+  );
+}
+
+function CopyBlockEditor({ block, onChange }: { block: CopyBlock; onChange: (block: CopyBlock) => void }) {
+  return (
+    <div className="space-y-2 rounded-md border border-zinc-200 bg-white p-3">
+      <OptionalTextInput
+        label="标签"
+        value={block.label ?? ""}
+        addLabel="添加标签"
+        placeholder="标签"
+        onChange={(label) => onChange({ ...block, label })}
+      />
+      <TextArea
+        label="正文"
+        value={block.text}
+        onChange={(text) => onChange({ ...block, text })}
+        minRows={1}
+        maxRows={12}
+      />
+      <OptionalTextArea
+        label="视觉表达"
+        value={block.visual_hint ?? ""}
+        addLabel="添加视觉表达"
+        placeholder="补充适合的图标、构图或标注方式"
+        onChange={(visual_hint) => onChange({ ...block, visual_hint })}
+      />
+    </div>
+  );
+}
+
+function CopySectionEditor({ section, onChange }: { section: CopySection; onChange: (section: CopySection) => void }) {
+  return (
+    <div className="space-y-2 rounded-md border border-zinc-200 bg-white p-3">
+      <OptionalTextInput
+        label="分区标题"
+        value={section.title ?? ""}
+        addLabel="添加分区标题"
+        placeholder="分区标题"
+        onChange={(title) => onChange({ ...section, title })}
+      />
+      <OptionalTextArea
+        label="说明"
+        value={section.body ?? ""}
+        addLabel="添加说明"
+        placeholder="补充该分区承载的文案或画面说明"
+        onChange={(body) => onChange({ ...section, body })}
+      />
+      {section.items.length ? (
+        <div className="space-y-1.5">
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
+            条目
+          </div>
+          <div className="space-y-1.5">
+            {section.items.map((item, index) => (
+              <CopySectionItemEditor
+                key={item.id}
+                block={item}
+                onChange={(nextItem) => {
+                  const items = [...section.items];
+                  items[index] = nextItem;
+                  onChange({ ...section, items });
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <OptionalTextArea
+        label="视觉建议"
+        value={section.visual_hint ?? ""}
+        addLabel="添加视觉建议"
+        placeholder="补充该分区的构图、位置或视觉标注"
+        onChange={(visual_hint) => onChange({ ...section, visual_hint })}
+      />
+    </div>
+  );
+}
+
+function CopySectionItemEditor({ block, onChange }: { block: CopyBlock; onChange: (block: CopyBlock) => void }) {
+  return (
+    <div className="space-y-1.5 border-l border-zinc-200 pl-2.5">
+      <OptionalTextInput
+        label="标签"
+        value={block.label ?? ""}
+        addLabel="添加标签"
+        placeholder="标签"
+        onChange={(label) => onChange({ ...block, label })}
+      />
+      <TextArea
+        label="正文"
+        value={block.text}
+        onChange={(text) => onChange({ ...block, text })}
+        minRows={1}
+        maxRows={8}
+      />
+      <OptionalTextArea
+        label="视觉表达"
+        value={block.visual_hint ?? ""}
+        addLabel="添加视觉表达"
+        placeholder="补充这个条目的视觉表达"
+        onChange={(visual_hint) => onChange({ ...block, visual_hint })}
+      />
+    </div>
+  );
+}
+
+function OptionalTextInput({
+  label,
+  value,
+  addLabel,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  addLabel: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+}) {
+  const [isEditing, setIsEditing] = useState(hasText(value));
+  const shouldShowInput = isEditing || hasText(value);
+
+  if (!shouldShowInput) {
+    return (
+      <button
+        type="button"
+        className={ADD_COPY_FIELD_BUTTON_CLASS_NAME}
+        onClick={() => setIsEditing(true)}
+      >
+        <Plus size={12} />
+        {addLabel}
+      </button>
+    );
+  }
+
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
+        {label}
+      </span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => {
+          if (!hasText(value)) {
+            setIsEditing(false);
+          }
+        }}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-zinc-200 px-3 py-2 text-xs outline-none focus:border-zinc-900 focus:ring-1 focus:ring-zinc-900"
+      />
+    </label>
+  );
+}
+
+function OptionalTextArea({
+  label,
+  value,
+  addLabel,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  addLabel: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+}) {
+  const [isEditing, setIsEditing] = useState(hasText(value));
+  const shouldShowTextArea = isEditing || hasText(value);
+
+  if (!shouldShowTextArea) {
+    return (
+      <button
+        type="button"
+        className={ADD_COPY_FIELD_BUTTON_CLASS_NAME}
+        onClick={() => setIsEditing(true)}
+      >
+        <Plus size={12} />
+        {addLabel}
+      </button>
+    );
+  }
+
+  return (
+    <TextArea
+      label={label}
+      value={value}
+      onChange={onChange}
+      onBlur={() => {
+        if (!hasText(value)) {
+          setIsEditing(false);
+        }
+      }}
+      minRows={1}
+      maxRows={12}
+      placeholder={placeholder}
+    />
+  );
+}
+
+function hasText(value: string | null | undefined): boolean {
+  return Boolean(value?.trim());
+}
+
+function DerivedCopyFields({ draft }: { draft: NodeConfigDraft }) {
+  const points = draft.copySellingPoints.split("\n").filter(Boolean);
+  return (
+    <div className="rounded-md border border-dashed border-zinc-200 bg-white px-3 py-2 text-[11px] leading-5 text-zinc-500">
+      <div className="mb-1 font-semibold text-zinc-600">派生字段</div>
+      <div>标题：{draft.copyTitle || "未派生"}</div>
+      <div>卖点：{points.length ? points.join(" / ") : "未派生"}</div>
+      <div>海报标题：{draft.copyPosterHeadline || "未派生"}</div>
+      <div>CTA：{draft.copyCta || "未派生"}</div>
     </div>
   );
 }

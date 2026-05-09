@@ -207,6 +207,7 @@ def update_workflow_copy_set_endpoint(
             selling_points=payload.selling_points,
             poster_headline=payload.poster_headline,
             cta=payload.cta,
+            structured_payload=payload.structured_payload,
         )
     except ValueError as exc:
         raise_value_error_as_http(exc)

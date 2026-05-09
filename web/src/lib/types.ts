@@ -64,6 +64,53 @@ export interface CreativeBriefSummary {
   created_at: string;
 }
 
+export interface LegacyCopyFields {
+  title: string;
+  selling_points: string[];
+  poster_headline: string;
+  cta: string;
+}
+
+export interface CopyBlock {
+  id: string;
+  role?: string | null;
+  label?: string | null;
+  text: string;
+  note?: string | null;
+  visual_hint?: string | null;
+  priority?: number | null;
+}
+
+export interface CopySection {
+  id: string;
+  title?: string | null;
+  body?: string | null;
+  items: CopyBlock[];
+  visual_hint?: string | null;
+}
+
+export type CopyContent =
+  | { kind: "freeform"; text: string }
+  | { kind: "blocks"; blocks: CopyBlock[] }
+  | { kind: "layout_brief"; sections: CopySection[] };
+
+export interface VisualGuidance {
+  main_message?: string | null;
+  hierarchy: string[];
+  composition_hint?: string | null;
+  text_density?: "none" | "low" | "medium" | "high" | null;
+  avoid: string[];
+}
+
+export interface CopyPayloadV2 {
+  version: 2;
+  purpose?: string | null;
+  summary: string;
+  content: CopyContent;
+  visual_guidance?: VisualGuidance | null;
+  derived?: LegacyCopyFields | null;
+}
+
 export interface CopySet {
   id: string;
   creative_brief_id: string | null;
@@ -72,10 +119,12 @@ export interface CopySet {
   selling_points: string[];
   poster_headline: string;
   cta: string;
+  structured_payload: CopyPayloadV2;
   model_title: string;
   model_selling_points: string[];
   model_poster_headline: string;
   model_cta: string;
+  model_structured_payload: CopyPayloadV2 | null;
   provider_name: string;
   model_name: string;
   prompt_version: string;
@@ -364,6 +413,7 @@ export interface CopySetUpdateRequest {
   selling_points?: string[];
   poster_headline?: string;
   cta?: string;
+  structured_payload?: CopyPayloadV2;
 }
 
 export interface ImageSessionAsset {

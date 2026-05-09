@@ -25,7 +25,7 @@ Non-target users: teams that need multi-tenant isolation, complex RBAC, payment 
 1. Log in with an admin key.
 2. Create a product, upload the product source image, fill in the product name, and choose a blank canvas or ecommerce scenario template.
 3. Enter the product workbench and add category, price, product notes, and generation direction.
-4. Use copy nodes to generate and edit the product title, selling points, poster headline, and CTA.
+4. Use copy nodes to generate and edit structured copy; title, selling points, poster headline, and CTA are derived compatibility fields for legacy rendering paths.
 5. Use image-generation nodes to generate images and fill downstream reference-image slots.
 6. Download images/posters, or review product asset history in the right-side Images panel.
 
@@ -66,7 +66,7 @@ Non-target users: teams that need multi-tenant isolation, complex RBAC, payment 
 - `Product`: product entity, including name, category, price, and input assets.
 - `SourceAsset`: product asset, including original main images, reference images, processed product images, and other types.
 - `CreativeBrief`: system-generated product understanding result that provides shared semantics for copy and posters.
-- `CopySet`: one copy-generation result, editable and confirmable.
+- `CopySet`: one copy-generation result whose primary content is editable structured copy, with title, selling points, poster headline, and CTA retained as derived compatibility fields.
 - `PosterVariant`: main image / promotional poster output based on copy and assets.
 - `ImageSession` / `ImageSessionAsset`: standalone iterative image-generation session and its reference/generated images.
 - `ImageSessionRound` / `ImageSessionGenerationTask`: iterative image candidates and durable async generation-task state.

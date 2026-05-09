@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from productflow_backend.application.contracts import ReferenceImageInput
+from productflow_backend.application.copy_payloads import copy_payload_context_text, normalize_copy_payload
 from productflow_backend.application.image_generation_core import (
     normalize_image_generation_tool_options,
     unique_image_generation_references,
@@ -255,6 +256,17 @@ def collect_incoming_context(
                 suffix = f"，文件：{filename}" if filename else ""
                 context.append_text(node=candidate, label="参考图", text=f"参考图：{label}（角色：{role}{suffix}）")
         if candidate.node_type == WorkflowNodeType.COPY_GENERATION:
+            structured_payload = output.get("structured_payload")
+            if isinstance(structured_payload, dict):
+                try:
+                    context.append_text(
+                        node=candidate,
+                        label="文案",
+                        text=copy_payload_context_text(normalize_copy_payload(structured_payload)),
+                    )
+                    continue
+                except ValueError:
+                    pass
             title = _output_text(output, "title")
             poster_headline = _output_text(output, "poster_headline")
             cta = _output_text(output, "cta")

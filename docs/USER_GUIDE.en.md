@@ -48,9 +48,11 @@ Expected result: the form saves successfully. Later copy and image generation us
 
 3. Click **Run current node**. If you want to run from product details all the way to image generation, click **Run workflow**.
 
-Expected result: the copy card generates a title, selling points, poster headline, and button copy.
+Expected result: the copy card generates an editable structured copy payload. It may be freeform text, short labeled blocks, layout sections, visual guidance, or a mix that fits the selected template.
 
 If you are not satisfied, change only one direction and try again, such as "make it younger", "make it more concise", or "use fewer exaggerated words".
+
+The copy detail editor shows fields that already have content. Empty optional fields collapse into compact add buttons such as "add label" or "add visual guidance", and long text boxes grow with their content. Title, selling points, poster headline, and button copy still appear as derived compatibility fields, but they are not the main fields that every result must fill.
 
 ### 4. Add or Connect Reference Images
 
@@ -161,7 +163,9 @@ When a reference image card is selected, assets in the right-side **Images** pan
 
 ### Copy
 
-Generates title, selling points, poster headline, and button copy. After generation, you can keep editing inside the card. Edited copy is used by later image generation.
+Generates editable structured copy. The result can be freeform text, copy blocks, layout sections, and visual guidance. After generation, you can keep editing inside the card. Edited structured copy is used by later image generation.
+
+Title, selling points, poster headline, and button copy are derived from the structured payload for legacy poster rendering and historical data. You do not need to invent a CTA or fixed selling-point list when the scene does not need one.
 
 ### Image Generation
 

@@ -178,6 +178,13 @@ def test_builtin_canvas_templates_satisfy_v1_contract() -> None:
             if node.instruction_seed is not None
         )
         assert all(
+            node.config_json.get("version") == 2
+            and node.config_json.get("output_mode") in {"freeform", "blocks", "layout_brief"}
+            and node.config_json.get("purpose")
+            for node in template.nodes
+            if node.node_type == WorkflowNodeType.COPY_GENERATION
+        )
+        assert all(
             node.config_json.get("size") == node.size
             for node in template.nodes
             if node.node_type == WorkflowNodeType.IMAGE_GENERATION and node.size is not None

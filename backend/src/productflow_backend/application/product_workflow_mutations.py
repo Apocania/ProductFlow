@@ -11,6 +11,7 @@ from productflow_backend.application import product_workflow_graph
 from productflow_backend.application.canvas_templates import CanvasTemplateNodeSpec
 from productflow_backend.application.image_generation_core import normalize_image_generation_tool_options
 from productflow_backend.application.product_workflow_artifacts import (
+    copy_node_output,
     fill_reference_node,
     image_asset_output,
     source_asset_for_poster_variant,
@@ -322,6 +323,7 @@ def update_workflow_copy_set(
     selling_points: list[str] | None,
     poster_headline: str | None,
     cta: str | None,
+    structured_payload: dict[str, Any] | None = None,
 ) -> ProductWorkflow:
     node = product_workflow_graph.get_node_or_raise(session, node_id)
     if node.node_type != WorkflowNodeType.COPY_GENERATION:
@@ -343,21 +345,11 @@ def update_workflow_copy_set(
         selling_points=selling_points,
         poster_headline=poster_headline,
         cta=cta,
+        structured_payload=structured_payload,
     )
     node = product_workflow_graph.get_node_or_raise(session, node_id)
     output = dict(node.output_json or {})
-    output.update(
-        {
-            "copy_set_id": copy_set.id,
-            "creative_brief_id": copy_set.creative_brief_id,
-            "title": copy_set.title,
-            "poster_headline": copy_set.poster_headline,
-            "selling_points": copy_set.selling_points,
-            "cta": copy_set.cta,
-            "manual_edit": True,
-            "summary": f"文案：{copy_set.poster_headline}",
-        }
-    )
+    output.update(copy_node_output(copy_set, creative_brief_id=copy_set.creative_brief_id, manual_edit=True))
     node.output_json = output
     node.workflow.updated_at = now_utc()
     node.workflow.product.updated_at = now_utc()

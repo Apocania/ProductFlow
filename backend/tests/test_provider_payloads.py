@@ -18,12 +18,19 @@ from PIL import Image
 from pydantic import ValidationError
 
 from productflow_backend.application.contracts import (
+    BlocksCopyContent,
+    CopyBlock,
     CopyPayload,
+    CopyPayloadV2,
+    CopySection,
     CreativeBriefPayload,
+    FreeformCopyContent,
+    LayoutBriefCopyContent,
     PosterGenerationInput,
     ProductInput,
     ReferenceImageInput,
 )
+from productflow_backend.application.copy_payloads import copy_payload_to_legacy_fields, normalize_copy_payload
 from productflow_backend.application.product_workflow_dependencies import WorkflowExecutionDependencies
 from productflow_backend.application.product_workflows import run_product_workflow
 from productflow_backend.application.use_cases import (
@@ -243,6 +250,242 @@ def test_ai_payload_normalizes_scalar_text_lists_without_swallowing_malformed_va
                     "cta": "马上试试",
                 }
             )
+
+
+def test_copy_payload_v2_supports_flexible_content_and_derives_legacy_fields() -> None:
+    freeform = CopyPayloadV2(summary="白底图只保留主体", content=FreeformCopyContent(text="主体居中，保留真实材质。"))
+    blocks = CopyPayloadV2(
+        summary="卖点速览",
+        content=BlocksCopyContent(
+            blocks=[
+                CopyBlock(id="a", label="免打孔", text="不伤墙面，安装更轻松", visual_hint="墙面标注"),
+                CopyBlock(id="b", label="承重", text="厨房瓶罐稳定收纳", visual_hint="承重图标"),
+            ]
+        ),
+    )
+    layout = CopyPayloadV2(
+        summary="信息图层级",
+        content=LayoutBriefCopyContent(
+            sections=[
+                CopySection(
+                    id="hero",
+                    title="主标题区",
+                    body="免打孔收纳",
+                    items=[CopyBlock(id="point", text="下方放 2 个功能标签")],
+                    visual_hint="上方留白放标题",
+                )
+            ]
+        ),
+    )
+
+    assert copy_payload_to_legacy_fields(freeform).title == "主体居中，保留真实材质。"
+    assert copy_payload_to_legacy_fields(blocks).selling_points[:2] == [
+        "厨房瓶罐稳定收纳",
+        "卖点速览",
+    ]
+    assert copy_payload_to_legacy_fields(layout).poster_headline == "主标题区"
+
+
+def test_copy_payload_v2_normalizes_provider_block_variants() -> None:
+    payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "坐标验收商品4",
+            "content": {
+                "kind": "blocks",
+                "blocks": [
+                    {"type": "title", "text": "坐标验收商品4"},
+                    {"type": "benefit", "text": "覆盖上下架流程验收"},
+                    {"type": "benefit", "text": "节点、区域功能测试"},
+                    {"type": "benefit", "text": "方便快速识别管理"},
+                    {
+                        "type": "benefits",
+                        "items": ["自动保存", "运行前同步", "展示和数据校验"],
+                    },
+                ],
+            },
+        }
+    )
+
+    assert payload.content.kind == "blocks"
+    assert [block.id for block in payload.content.blocks] == [
+        "title-1",
+        "benefit-2",
+        "benefit-3",
+        "benefit-4",
+        "benefits-5",
+    ]
+    assert payload.content.blocks[0].role == "title"
+    assert payload.content.blocks[1].text == "覆盖上下架流程验收"
+    assert payload.content.blocks[4].text == "自动保存；运行前同步；展示和数据校验"
+    assert copy_payload_to_legacy_fields(payload).selling_points[:2] == [
+        "覆盖上下架流程验收",
+        "节点、区域功能测试",
+    ]
+
+
+def test_copy_payload_v2_normalizes_real_provider_freeform_variants() -> None:
+    items_payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "小红书封面角度",
+            "content": {
+                "kind": "freeform",
+                "items": ["租房也能少打孔", "厨房浴室都能放", "双层和挂钩款按空间选"],
+            },
+        }
+    )
+    list_text_payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "人群与场景",
+            "content": {
+                "kind": "freeform",
+                "text": ["租房厨房台面更清爽", "浴室洗护瓶分层收纳"],
+            },
+        }
+    )
+    dict_text_payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "场景说明",
+            "content": {
+                "kind": "freeform",
+                "text": {"适合场景": ["厨房调味瓶", "浴室洗护瓶"], "注意": "不承诺适用所有墙面"},
+            },
+        }
+    )
+    chinese_key_payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "细节说明",
+            "content": {
+                "kind": "freeform",
+                "短标签": "304 不锈钢",
+                "说明": "底部沥水孔减少积水，建议重物螺丝加固。",
+            },
+        }
+    )
+
+    assert items_payload.content.text == "租房也能少打孔\n厨房浴室都能放\n双层和挂钩款按空间选"
+    assert list_text_payload.content.text == "租房厨房台面更清爽\n浴室洗护瓶分层收纳"
+    assert "适合场景：厨房调味瓶\n浴室洗护瓶" in dict_text_payload.content.text
+    assert "短标签：304 不锈钢" in chinese_key_payload.content.text
+    assert "说明：底部沥水孔减少积水" in chinese_key_payload.content.text
+
+
+def test_copy_payload_v2_normalizes_real_provider_layout_variants() -> None:
+    payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "多角度规划",
+            "content": {
+                "kind": "layout_brief",
+                "items": [
+                    {
+                        "order": 1,
+                        "angle": "正面主视觉",
+                        "copy": "展示置物架主体和前挡边，标题强调免打孔厨卫收纳。",
+                        "shot": "主体居中，保留墙面和台面参照。",
+                    },
+                    {
+                        "label": "底部沥水",
+                        "description": "特写底部沥水孔，说明洗护瓶和清洁工具放置更清爽。",
+                        "visual_suggestion": "使用局部放大标注。",
+                    },
+                ],
+            },
+        }
+    )
+
+    assert payload.content.kind == "layout_brief"
+    assert len(payload.content.sections) == 2
+    assert payload.content.sections[0].id == "正面主视觉-1"
+    assert payload.content.sections[0].title == "正面主视觉"
+    assert payload.content.sections[0].body == "展示置物架主体和前挡边，标题强调免打孔厨卫收纳。"
+    assert payload.content.sections[0].visual_hint == "主体居中，保留墙面和台面参照。"
+    assert payload.content.sections[1].title == "底部沥水"
+    assert payload.content.sections[1].body == "特写底部沥水孔，说明洗护瓶和清洁工具放置更清爽。"
+
+
+def test_copy_payload_v2_normalizes_layout_object_fields_to_sections() -> None:
+    payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "视觉层级",
+            "content": {
+                "kind": "layout_brief",
+                "hero_area": {"title": "主标题区", "copy": "厨卫收纳，限时到手69元起"},
+                "feature_points": [
+                    {"label": "304不锈钢", "text": "厨卫潮湿环境也好打理"},
+                    {"label": "免打孔安装", "text": "也可按需螺丝加固"},
+                ],
+                "disclaimer": ["优惠以页面为准", "承重与墙面条件有关"],
+            },
+        }
+    )
+
+    assert payload.content.kind == "layout_brief"
+    assert [section.title for section in payload.content.sections] == [
+        "主标题区",
+        "feature points",
+        "disclaimer",
+    ]
+    assert payload.content.sections[0].body == "厨卫收纳，限时到手69元起"
+    assert [item.label for item in payload.content.sections[1].items] == [
+        "304不锈钢",
+        "免打孔安装",
+    ]
+    assert [item.text for item in payload.content.sections[1].items] == [
+        "厨卫潮湿环境也好打理",
+        "也可按需螺丝加固",
+    ]
+    assert payload.content.sections[2].body == "优惠以页面为准\n承重与墙面条件有关"
+
+
+def test_copy_payload_v2_drops_empty_provider_blocks() -> None:
+    payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "对比维度",
+            "content": {
+                "kind": "blocks",
+                "blocks": [
+                    {"type": "compare_label", "text": "免打孔安装"},
+                    {"type": "separator", "text": ""},
+                    {"type": "compare_label", "text": "304 不锈钢"},
+                ],
+            },
+        }
+    )
+
+    assert payload.content.kind == "blocks"
+    assert [block.text for block in payload.content.blocks] == ["免打孔安装", "304 不锈钢"]
+
+
+def test_copy_payload_v2_drops_empty_layout_items() -> None:
+    payload = normalize_copy_payload(
+        {
+            "version": 2,
+            "summary": "画面节奏",
+            "content": {
+                "kind": "layout_brief",
+                "sections": [
+                    {
+                        "title": "3秒内",
+                        "items": [
+                            {"label": "空镜头", "text": ""},
+                            {"label": "钩子", "text": "台面乱？上墙收一收"},
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+
+    assert payload.content.kind == "layout_brief"
+    assert [item.text for item in payload.content.sections[0].items] == ["台面乱？上墙收一收"]
+
 
 def test_product_workflow_copy_run_normalizes_provider_scalar_lists(configured_env: Path, monkeypatch) -> None:
     class ListAudienceTextProvider:

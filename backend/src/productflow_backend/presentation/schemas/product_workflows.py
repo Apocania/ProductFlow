@@ -232,6 +232,7 @@ class UpdateWorkflowCopySetRequest(BaseModel):
     selling_points: list[str] | None = None
     poster_headline: str | None = Field(default=None, min_length=1, max_length=500)
     cta: str | None = Field(default=None, min_length=1, max_length=300)
+    structured_payload: dict[str, Any] | None = None
 
 
 class BindWorkflowNodeImageRequest(BaseModel):

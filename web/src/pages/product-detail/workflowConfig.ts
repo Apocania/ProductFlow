@@ -1,4 +1,10 @@
-import type { ImageToolOptionKey, ProductDetail, WorkflowNode, WorkflowNodeType } from "../../lib/types";
+import type {
+  CopyPayloadV2,
+  ImageToolOptionKey,
+  ProductDetail,
+  WorkflowNode,
+  WorkflowNodeType,
+} from "../../lib/types";
 import {
   DEFAULT_IMAGE_TOOL_ALLOWED_FIELDS,
   compactImageToolOptions,
@@ -6,6 +12,14 @@ import {
 } from "../../lib/imageToolOptions";
 import type { NodeConfigDraft } from "./types";
 import { configString, outputStringArray, outputText } from "./utils";
+
+function outputStructuredPayload(node: WorkflowNode | null): CopyPayloadV2 | null {
+  const payload = node?.output_json?.structured_payload;
+  if (payload && typeof payload === "object" && "version" in payload && "content" in payload) {
+    return payload as CopyPayloadV2;
+  }
+  return null;
+}
 
 export function draftFromNode(
   node: WorkflowNode | null,
@@ -47,6 +61,7 @@ export function draftFromNode(
     copyCta:
       copySet?.cta ??
       (node?.output_json ? (outputText(node.output_json, "cta") ?? "") : ""),
+    copyStructuredPayload: copySet?.structured_payload ?? outputStructuredPayload(node),
   };
 }
 
@@ -71,9 +86,12 @@ export function nodeConfigFromDraft(
   if (node.node_type === "copy_generation") {
     return {
       ...base,
+      version: 2,
       instruction: draft.instruction,
       tone: draft.tone,
       channel: draft.channel,
+      purpose: configString(node, "purpose"),
+      output_mode: configString(node, "output_mode", "blocks"),
     };
   }
   if (node.node_type === "image_generation") {
@@ -93,7 +111,13 @@ export function defaultConfigForType(type: WorkflowNodeType): Record<string, unk
     return { role: "reference", label: "参考图" };
   }
   if (type === "copy_generation") {
-    return { instruction: "生成商品文案", tone: "清晰可信", channel: "商品图" };
+    return {
+      version: 2,
+      instruction: "生成商品文案",
+      tone: "清晰可信",
+      channel: "商品图",
+      output_mode: "blocks",
+    };
   }
   if (type === "image_generation") {
     return {

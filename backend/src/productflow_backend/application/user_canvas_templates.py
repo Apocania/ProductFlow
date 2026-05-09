@@ -14,6 +14,7 @@ from productflow_backend.application.canvas_templates import (
     CanvasTemplateScenario,
     CanvasTemplateScenarioMetadata,
 )
+from productflow_backend.application.copy_payloads import normalize_copy_node_config
 from productflow_backend.application.image_generation_core import normalize_image_generation_tool_options
 from productflow_backend.application.product_workflow_context import image_size_from_config
 from productflow_backend.application.time import now_utc
@@ -317,6 +318,8 @@ def _normalize_template_node_config(node_type: WorkflowNodeType, config_json: di
             config["tool_options"] = normalize_image_generation_tool_options(
                 raw_tool_options if isinstance(raw_tool_options, dict) else None
             )
+    if node_type == WorkflowNodeType.COPY_GENERATION:
+        config = normalize_copy_node_config(config).model_dump(mode="json")
     return config
 
 

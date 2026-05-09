@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from productflow_backend.application.contracts import (
-    CopyPayload,
+    BlocksCopyContent,
+    CopyBlock,
+    CopyNodeConfigV2,
+    CopyPayloadV2,
     CreativeBriefPayload,
+    LegacyCopyFields,
     ProductInput,
     ReferenceImageInput,
+    VisualGuidance,
 )
 from productflow_backend.infrastructure.text.base import TextProvider
 
@@ -32,13 +37,13 @@ class MockTextProvider(TextProvider):
         self,
         product: ProductInput,
         brief: CreativeBriefPayload,
-        instruction: str | None = None,
+        config: CopyNodeConfigV2,
         reference_images: list[ReferenceImageInput] | None = None,
-    ) -> tuple[CopyPayload, str]:
+    ) -> tuple[CopyPayloadV2, str]:
         category_prefix = f"{product.category} " if product.category else ""
         price_line = f" 参考价 {product.price}" if product.price else ""
         note_line = f"，结合描述：{product.source_note[:36]}" if product.source_note else ""
-        instruction_line = f"，本轮方向：{instruction[:32]}" if instruction else ""
+        instruction_line = f"，本轮方向：{config.instruction[:32]}" if config.instruction else ""
         reference_images = reference_images or []
         reference_hint = ""
         if reference_images:
@@ -46,14 +51,46 @@ class MockTextProvider(TextProvider):
             label = first_reference.label or first_reference.filename
             role = first_reference.role or "参考图"
             reference_hint = f"，参考{role}：{label}"
-        copy = CopyPayload(
-            title=f"{category_prefix}{product.name}｜实用好上手，店铺主推更省心",
-            selling_points=[
-                f"核心用途更清楚：{product.name}一眼看懂卖点{note_line}{reference_hint}",
-                "展示更直接，适合主图和促销素材快速上架",
-                f"语言偏转化型，适合淘宝电商场景{price_line}{instruction_line}".strip(),
-            ],
-            poster_headline=f"{product.name} 现在入手更划算",
-            cta="下单前先收藏，对比后更容易做决定",
+        title = f"{category_prefix}{product.name}｜实用好上手，店铺主推更省心"
+        points = [
+            f"核心用途更清楚：{product.name}一眼看懂重点{note_line}{reference_hint}",
+            "展示更直接，适合主图、详情页或促销素材快速承接",
+            (
+                f"语言偏{config.tone or '转化清晰'}，适合"
+                f"{config.channel or '电商'}场景{price_line}{instruction_line}"
+            ).strip(),
+        ]
+        copy = CopyPayloadV2(
+            purpose=config.purpose,
+            summary=title,
+            content=BlocksCopyContent(
+                blocks=[
+                    CopyBlock(id="headline", role="headline", label="主信息", text=title, priority=1),
+                    *[
+                        CopyBlock(
+                            id=f"point-{index}",
+                            role="selling_point",
+                            label=f"卖点 {index}",
+                            text=point,
+                            visual_hint="可作为画面标注或图标旁短说明",
+                            priority=index + 1,
+                        )
+                        for index, point in enumerate(points, start=1)
+                    ],
+                ]
+            ),
+            visual_guidance=VisualGuidance(
+                main_message=title,
+                hierarchy=["商品主体", "核心卖点", "补充说明"],
+                composition_hint=brief.poster_style_hint,
+                text_density="medium",
+                avoid=brief.taboo_phrases,
+            ),
+            derived=LegacyCopyFields(
+                title=title,
+                selling_points=points,
+                poster_headline=f"{product.name} 重点速看",
+                cta="",
+            ),
         )
-        return copy, "mock-copy-v1"
+        return copy, "mock-copy-v2"

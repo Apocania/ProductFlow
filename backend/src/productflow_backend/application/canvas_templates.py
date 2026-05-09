@@ -284,6 +284,8 @@ def _node(
     config = dict(config_json or {})
     if instruction_seed is not None and "instruction" not in config:
         config["instruction"] = instruction_seed
+    if node_type == WorkflowNodeType.COPY_GENERATION:
+        config = _copy_node_config(config, instruction_seed=instruction_seed)
     if size is not None and "size" not in config:
         config["size"] = size
     return CanvasTemplateNodeSpec(
@@ -299,6 +301,54 @@ def _node(
         output_slot_label=output_slot_label,
         reference_input_hint=reference_input_hint,
     )
+
+
+def _copy_node_config(config: dict[str, Any], *, instruction_seed: str | None) -> dict[str, Any]:
+    instruction = str(config.get("instruction") or instruction_seed or "")
+    output_mode = config.get("output_mode")
+    if output_mode not in {"freeform", "blocks", "layout_brief"}:
+        output_mode = _infer_copy_output_mode(instruction)
+    next_config = {
+        **config,
+        "version": 2,
+        "instruction": instruction,
+        "output_mode": output_mode,
+    }
+    next_config.setdefault("purpose", _infer_copy_purpose(instruction))
+    next_config.setdefault("requested_slots", [])
+    return next_config
+
+
+def _infer_copy_output_mode(instruction: str) -> str:
+    if any(keyword in instruction for keyword in ("层级", "布局", "留白", "构图", "信息图", "视觉")):
+        return "layout_brief"
+    if any(keyword in instruction for keyword in ("卖点", "规格", "尺寸", "步骤", "清单", "对比", "标签", "参数")):
+        return "blocks"
+    return "freeform"
+
+
+def _infer_copy_purpose(instruction: str) -> str:
+    mapping = (
+        ("白底", "white_background"),
+        ("短视频", "short_video_cover"),
+        ("活动", "campaign_promotion"),
+        ("优惠", "campaign_promotion"),
+        ("对比", "comparison"),
+        ("步骤", "usage_steps"),
+        ("清单", "package_checklist"),
+        ("包装", "package_checklist"),
+        ("尺度", "scale_reference"),
+        ("尺寸", "size_spec"),
+        ("规格", "size_spec"),
+        ("卖点", "feature_infographic"),
+        ("SKU", "sku_variant"),
+        ("场景", "scene_image"),
+        ("封面", "content_cover"),
+    )
+    for keyword, purpose in mapping:
+        if keyword in instruction:
+            return purpose
+    return "ecommerce_copy"
 
 
 def _edge(source: str, target: str) -> CanvasTemplateEdgeSpec:

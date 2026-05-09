@@ -3,7 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from productflow_backend.application.contracts import (
-    CopyPayload,
+    CopyNodeConfigV2,
+    CopyPayloadV2,
     CreativeBriefPayload,
     ProductInput,
     ReferenceImageInput,
@@ -25,7 +26,7 @@ class TextProvider(ABC):
         self,
         product: ProductInput,
         brief: CreativeBriefPayload,
-        instruction: str | None = None,
+        config: CopyNodeConfigV2,
         reference_images: list[ReferenceImageInput] | None = None,
-    ) -> tuple[CopyPayload, str]:
+    ) -> tuple[CopyPayloadV2, str]:
         raise NotImplementedError

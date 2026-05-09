@@ -211,6 +211,8 @@ def test_product_workflow_dag_runs_and_persists_artifacts(configured_env: Path) 
     assert all(node["status"] == "succeeded" for node in run_payload["nodes"])
     copy_output = next(node for node in run_payload["nodes"] if node["node_type"] == "copy_generation")["output_json"]
     assert copy_output["copy_set_id"]
+    assert copy_output["structured_payload"]["version"] == 2
+    assert copy_output["derived_fields"]["selling_points"]
     assert "免打孔" in " ".join(copy_output["selling_points"])
     assert "厨房风格图" in " ".join(copy_output["selling_points"])
     edited_copy = client.patch(
@@ -225,6 +227,7 @@ def test_product_workflow_dag_runs_and_persists_artifacts(configured_env: Path) 
     assert edited_copy.status_code == 200
     edited_copy_node = next(node for node in edited_copy.json()["nodes"] if node["id"] == copy_node["id"])
     assert edited_copy_node["output_json"]["title"] == "厨房免打孔收纳架"
+    assert edited_copy_node["output_json"]["structured_payload"]["version"] == 2
     assert edited_copy_node["output_json"]["poster_headline"] == "厨房整洁一步到位"
     rerun_image = client.post(
         f"/api/products/{product_id}/workflow/run",
@@ -1038,7 +1041,13 @@ def test_user_template_group_preserves_unrun_prompt_config_when_applied(configur
         template = session.get(UserCanvasTemplate, template_id)
         assert template is not None
         template_nodes = {node["node_type"]: node for node in template.template_json["nodes"]}
-        assert template_nodes["copy_generation"]["config_json"] == copy_config
+        assert template_nodes["copy_generation"]["config_json"] == {
+            **copy_config,
+            "version": 2,
+            "output_mode": "freeform",
+            "purpose": None,
+            "requested_slots": [],
+        }
         assert template_nodes["image_generation"]["config_json"] == image_config
         assert not _contains_key(template.template_json, "output_json")
     finally:
@@ -1053,7 +1062,13 @@ def test_user_template_group_preserves_unrun_prompt_config_when_applied(configur
     assert applied.status_code == 201
     created_nodes = [node for node in applied.json()["nodes"] if node["id"] not in previous_node_ids]
     created_by_type = {node["node_type"]: node for node in created_nodes}
-    assert created_by_type["copy_generation"]["config_json"] == copy_config
+    assert created_by_type["copy_generation"]["config_json"] == {
+        **copy_config,
+        "version": 2,
+        "output_mode": "freeform",
+        "purpose": None,
+        "requested_slots": [],
+    }
     assert created_by_type["copy_generation"]["status"] == "idle"
     assert created_by_type["copy_generation"]["output_json"] is None
     assert created_by_type["image_generation"]["config_json"] == image_config

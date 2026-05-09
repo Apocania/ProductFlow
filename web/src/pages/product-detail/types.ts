@@ -1,4 +1,4 @@
-import type { ImageToolOptions } from "../../lib/types";
+import type { CopyPayloadV2, ImageToolOptions } from "../../lib/types";
 
 export type CanvasPoint = {
   x: number;
@@ -63,4 +63,5 @@ export type NodeConfigDraft = {
   copySellingPoints: string;
   copyPosterHeadline: string;
   copyCta: string;
+  copyStructuredPayload: CopyPayloadV2 | null;
 };

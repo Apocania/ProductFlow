@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+from typing import Any
+
+from productflow_backend.application.contracts import (
+    BlocksCopyContent,
+    CopyBlock,
+    CopyNodeConfigV2,
+    CopyPayload,
+    CopyPayloadV2,
+    FreeformCopyContent,
+    LayoutBriefCopyContent,
+    LegacyCopyFields,
+)
+from productflow_backend.infrastructure.db.models import CopySet
+
+
+def normalize_copy_node_config(raw_config: dict[str, Any] | None) -> CopyNodeConfigV2:
+    config = raw_config or {}
+    instruction = _string_or_empty(config.get("instruction"))
+    output_mode = _string_or_none(config.get("output_mode")) or _infer_output_mode(instruction)
+    return CopyNodeConfigV2.model_validate(
+        {
+            "version": 2,
+            "instruction": instruction,
+            "purpose": _string_or_none(config.get("purpose")),
+            "channel": _string_or_none(config.get("channel")),
+            "tone": _string_or_none(config.get("tone")),
+            "output_mode": output_mode,
+            "requested_slots": config.get("requested_slots") if isinstance(config.get("requested_slots"), list) else [],
+        }
+    )
+
+
+def normalize_copy_payload(raw_payload: Any, *, fallback_purpose: str | None = None) -> CopyPayloadV2:
+    if isinstance(raw_payload, CopyPayloadV2):
+        return raw_payload
+    if not isinstance(raw_payload, dict):
+        raise ValueError("文案模型输出必须是 JSON 对象")
+    if raw_payload.get("version") == 2 or "content" in raw_payload:
+        return CopyPayloadV2.model_validate(_normalize_v2_payload_dict(raw_payload))
+    legacy = CopyPayload.model_validate(raw_payload)
+    return legacy_copy_fields_to_payload(
+        LegacyCopyFields(
+            title=legacy.title,
+            selling_points=legacy.selling_points,
+            poster_headline=legacy.poster_headline,
+            cta=legacy.cta,
+        ),
+        purpose=fallback_purpose,
+    )
+
+
+def legacy_copy_fields_to_payload(fields: LegacyCopyFields, *, purpose: str | None = None) -> CopyPayloadV2:
+    blocks = [
+        CopyBlock(id="title", role="headline", label="标题", text=fields.title),
+        *[
+            CopyBlock(
+                id=f"selling-point-{index}",
+                role="selling_point",
+                label=f"卖点 {index}",
+                text=point,
+                priority=index,
+            )
+            for index, point in enumerate(fields.selling_points, start=1)
+            if point.strip()
+        ],
+    ]
+    if fields.poster_headline.strip() and fields.poster_headline.strip() != fields.title.strip():
+        blocks.append(CopyBlock(id="poster-headline", role="headline", label="海报标题", text=fields.poster_headline))
+    if fields.cta.strip():
+        blocks.append(CopyBlock(id="cta", role="cta", label="CTA", text=fields.cta))
+    return CopyPayloadV2(
+        purpose=purpose,
+        summary=fields.poster_headline or fields.title or fields.selling_points[0],
+        content=BlocksCopyContent(blocks=blocks),
+        derived=fields,
+    )
+
+
+def copy_set_structured_payload(copy_set: CopySet) -> CopyPayloadV2:
+    if isinstance(copy_set.structured_payload, dict):
+        return normalize_copy_payload(copy_set.structured_payload)
+    return legacy_copy_fields_to_payload(
+        LegacyCopyFields(
+            title=copy_set.title,
+            selling_points=copy_set.selling_points or [],
+            poster_headline=copy_set.poster_headline,
+            cta=copy_set.cta,
+        )
+    )
+
+
+def copy_payload_to_legacy_fields(payload: CopyPayloadV2) -> LegacyCopyFields:
+    if payload.derived is not None:
+        return _complete_legacy_fields(payload.derived, payload)
+    texts = _payload_texts(payload)
+    title = texts[0] if texts else payload.summary
+    points = texts[1:4]
+    while len(points) < 3:
+        points.append(payload.summary)
+    poster_headline = payload.visual_guidance.main_message if payload.visual_guidance else None
+    return LegacyCopyFields(
+        title=title[:500],
+        selling_points=[point[:500] for point in points[:5]],
+        poster_headline=(poster_headline or title or payload.summary)[:500],
+        cta=_first_role_text(payload, "cta")[:300],
+    )
+
+
+def copy_payload_context_text(payload: CopyPayloadV2) -> str:
+    parts = [f"摘要：{payload.summary}"]
+    if payload.purpose:
+        parts.append(f"用途：{payload.purpose}")
+    if isinstance(payload.content, FreeformCopyContent):
+        parts.append(f"正文：{payload.content.text}")
+    elif isinstance(payload.content, BlocksCopyContent):
+        for block in payload.content.blocks:
+            prefix = " / ".join(part for part in (block.label, block.role) if part)
+            body = block.text
+            if block.note:
+                body = f"{body}（{block.note}）"
+            if block.visual_hint:
+                body = f"{body}；视觉建议：{block.visual_hint}"
+            parts.append(f"{prefix}：{body}" if prefix else body)
+    elif isinstance(payload.content, LayoutBriefCopyContent):
+        for section in payload.content.sections:
+            title = f"{section.title}：" if section.title else ""
+            body = section.body or ""
+            item_text = "；".join(
+                f"{item.label or item.role or '条目'}：{item.text}" for item in section.items
+            )
+            visual = f"；视觉建议：{section.visual_hint}" if section.visual_hint else ""
+            parts.append(f"{title}{body}{('；' + item_text) if item_text else ''}{visual}")
+    if payload.visual_guidance:
+        guidance = payload.visual_guidance
+        if guidance.main_message:
+            parts.append(f"主信息：{guidance.main_message}")
+        if guidance.composition_hint:
+            parts.append(f"构图建议：{guidance.composition_hint}")
+        if guidance.hierarchy:
+            parts.append(f"信息层级：{' > '.join(guidance.hierarchy)}")
+        if guidance.avoid:
+            parts.append(f"避免：{'、'.join(guidance.avoid)}")
+    return "\n".join(part for part in parts if part.strip())
+
+
+def copy_payload_to_output(payload: CopyPayloadV2, legacy: LegacyCopyFields) -> dict[str, Any]:
+    return {
+        "structured_payload": payload.model_dump(mode="json"),
+        "derived_fields": legacy.model_dump(mode="json"),
+        "title": legacy.title,
+        "poster_headline": legacy.poster_headline,
+        "selling_points": legacy.selling_points,
+        "cta": legacy.cta,
+        "summary": f"文案：{payload.summary}",
+    }
+
+
+def _normalize_v2_payload_dict(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(raw_payload)
+    payload.setdefault("version", 2)
+    content = payload.get("content")
+    if not isinstance(content, dict):
+        return payload
+    content = dict(content)
+    if content.get("type") and not content.get("kind"):
+        content["kind"] = content["type"]
+    if content.get("kind") == "freeform":
+        content["text"] = _freeform_text_from_content(content)
+    if content.get("kind") == "blocks":
+        blocks = content.get("blocks")
+        if isinstance(blocks, list):
+            normalized_blocks = [
+                _normalize_block_dict(block, fallback_id=f"block-{index}", index=index)
+                for index, block in enumerate(blocks, start=1)
+            ]
+            content["blocks"] = [block for block in normalized_blocks if _normalized_block_has_text(block)]
+    elif content.get("kind") == "layout_brief":
+        sections = content.get("sections")
+        if isinstance(sections, list):
+            content["sections"] = [
+                _normalize_section_dict(section, fallback_id=f"section-{index}", index=index)
+                for index, section in enumerate(sections, start=1)
+            ]
+        else:
+            items = content.get("items")
+            if isinstance(items, list):
+                content["sections"] = [
+                    _normalize_section_dict(section, fallback_id=f"section-{index}", index=index)
+                    for index, section in enumerate(items, start=1)
+                ]
+            else:
+                sections = _layout_sections_from_object(content)
+                if sections:
+                    content["sections"] = sections
+    payload["content"] = content
+    return payload
+
+
+def _normalize_section_dict(raw_section: Any, *, fallback_id: str, index: int) -> Any:
+    if not isinstance(raw_section, dict):
+        return raw_section
+    section = dict(raw_section)
+    role = _string_or_none(section.get("type") or section.get("role"))
+    title = _string_or_none(
+        section.get("title") or section.get("label") or section.get("heading") or section.get("angle")
+    )
+    if title and not section.get("title"):
+        section["title"] = title
+    body = _section_body_text(section)
+    if body and not section.get("body"):
+        section["body"] = body
+    visual_hint = _string_or_none(
+        section.get("visual_hint")
+        or section.get("visual")
+        or section.get("visual_suggestion")
+        or section.get("visual_expression")
+        or section.get("composition")
+        or section.get("shot")
+    )
+    if visual_hint and not section.get("visual_hint"):
+        section["visual_hint"] = visual_hint
+    section.setdefault("id", _slug_id(role or section.get("title"), fallback_id=fallback_id, index=index))
+    items = section.get("items")
+    if isinstance(items, list):
+        normalized_items = [
+            _normalize_block_dict(item, fallback_id=f"{section['id']}-item-{item_index}", index=item_index)
+            for item_index, item in enumerate(items, start=1)
+        ]
+        section["items"] = [item for item in normalized_items if _normalized_block_has_text(item)]
+    return section
+
+
+def _layout_sections_from_object(content: dict[str, Any]) -> list[Any]:
+    ignored_keys = {"kind", "type"}
+    sections = []
+    for index, (key, value) in enumerate(
+        ((key, value) for key, value in content.items() if key not in ignored_keys),
+        start=1,
+    ):
+        title = _humanize_key(key)
+        if isinstance(value, dict):
+            section = dict(value)
+            section.setdefault("title", title)
+        elif isinstance(value, list) and any(isinstance(item, dict) for item in value):
+            section = {"title": title, "items": value}
+        else:
+            section = {"title": title, "body": _text_from_any(value)}
+        normalized = _normalize_section_dict(section, fallback_id=f"section-{index}", index=index)
+        if isinstance(normalized, dict) and (
+            _string_or_none(normalized.get("title"))
+            or _string_or_none(normalized.get("body"))
+            or normalized.get("items")
+            or _string_or_none(normalized.get("visual_hint"))
+        ):
+            sections.append(normalized)
+    return sections
+
+
+def _normalize_block_dict(raw_block: Any, *, fallback_id: str, index: int) -> Any:
+    if not isinstance(raw_block, dict):
+        return raw_block
+    block = dict(raw_block)
+    role = _string_or_none(block.get("role") or block.get("type"))
+    if role and not block.get("role"):
+        block["role"] = role
+    if not block.get("label"):
+        block["label"] = _string_or_none(block.get("tag") or block.get("title") or block.get("name") or role)
+    block.setdefault(
+        "id",
+        _slug_id(block.get("id") or block.get("label") or role, fallback_id=fallback_id, index=index),
+    )
+    if not _string_or_none(block.get("text")):
+        block["text"] = _block_text_from_items(block.get("items")) or _string_or_empty(
+            block.get("content") or block.get("description") or block.get("copy")
+        )
+    if block.get("items") is not None and not block.get("note"):
+        item_text = _block_text_from_items(block.get("items"))
+        if item_text:
+            block["note"] = item_text
+    return block
+
+
+def _normalized_block_has_text(block: Any) -> bool:
+    return not isinstance(block, dict) or bool(_string_or_none(block.get("text")))
+
+
+def _freeform_text_from_content(content: dict[str, Any]) -> str:
+    text = _text_from_any(content.get("text"))
+    if text:
+        return text
+    for key in ("items", "content", "copy", "body", "description", "paragraphs", "lines", "hooks"):
+        text = _text_from_any(content.get(key))
+        if text:
+            return text
+    ignored_keys = {"kind", "type"}
+    keyed_parts = []
+    for key, value in content.items():
+        if key in ignored_keys:
+            continue
+        text = _text_from_any(value)
+        if text:
+            keyed_parts.append(f"{key}：{text}")
+    return "\n".join(keyed_parts)
+
+
+def _section_body_text(section: dict[str, Any]) -> str:
+    for key in (
+        "body",
+        "copy",
+        "text",
+        "description",
+        "reason",
+        "message",
+        "content",
+        "note",
+        "caption",
+        "subtitle",
+    ):
+        text = _text_from_any(section.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _block_text_from_items(items: Any) -> str:
+    return _text_from_any(items, pair_separator="；")
+
+
+def _text_from_any(value: Any, *, pair_separator: str = "\n") -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            text = _text_from_any(item, pair_separator=pair_separator)
+            if text:
+                parts.append(text)
+        return pair_separator.join(parts)
+    if isinstance(value, dict):
+        direct = _string_or_empty(
+            value.get("text")
+            or value.get("content")
+            or value.get("description")
+            or value.get("copy")
+            or value.get("body")
+            or value.get("label")
+        )
+        if direct:
+            return direct
+        parts = []
+        for key, item in value.items():
+            text = _text_from_any(item, pair_separator=pair_separator)
+            if text:
+                parts.append(f"{key}：{text}")
+        return pair_separator.join(parts)
+    return ""
+
+
+def _slug_id(value: Any, *, fallback_id: str, index: int) -> str:
+    text = _string_or_none(value)
+    if not text:
+        return fallback_id
+    allowed = [character.lower() for character in text if character.isalnum() or character in {"-", "_"}]
+    slug = "".join(allowed).strip("-_")
+    return f"{slug or fallback_id}-{index}"
+
+
+def _humanize_key(value: str) -> str:
+    return value.replace("_", " ").replace("-", " ").strip() or "分区"
+
+
+def _complete_legacy_fields(fields: LegacyCopyFields, payload: CopyPayloadV2) -> LegacyCopyFields:
+    generated = LegacyCopyFields()
+    if not fields.title or not fields.poster_headline or len(fields.selling_points) < 3:
+        generated = copy_payload_to_legacy_fields(payload.model_copy(update={"derived": None}))
+    title = fields.title or generated.title or payload.summary
+    selling_points = [point for point in fields.selling_points if point.strip()] or generated.selling_points
+    while len(selling_points) < 3:
+        selling_points.append(payload.summary)
+    return LegacyCopyFields(
+        title=title[:500],
+        selling_points=[point[:500] for point in selling_points[:5]],
+        poster_headline=(fields.poster_headline or generated.poster_headline or title)[:500],
+        cta=(fields.cta or generated.cta)[:300],
+    )
+
+
+def _payload_texts(payload: CopyPayloadV2) -> list[str]:
+    if isinstance(payload.content, FreeformCopyContent):
+        return [payload.content.text]
+    if isinstance(payload.content, BlocksCopyContent):
+        return [block.text for block in sorted(payload.content.blocks, key=lambda item: item.priority or 999)]
+    texts: list[str] = []
+    for section in payload.content.sections:
+        texts.extend(part for part in (section.title, section.body) if part)
+        texts.extend(item.text for item in section.items)
+    return [text for text in texts if text.strip()]
+
+
+def _first_role_text(payload: CopyPayloadV2, role: str) -> str:
+    if isinstance(payload.content, BlocksCopyContent):
+        for block in payload.content.blocks:
+            if block.role == role:
+                return block.text
+    if isinstance(payload.content, LayoutBriefCopyContent):
+        for section in payload.content.sections:
+            for item in section.items:
+                if item.role == role:
+                    return item.text
+    return ""
+
+
+def _infer_output_mode(instruction: str) -> str:
+    if any(keyword in instruction for keyword in ("层级", "布局", "留白", "构图", "信息图")):
+        return "layout_brief"
+    if any(keyword in instruction for keyword in ("步骤", "规格", "卖点", "清单", "对比", "标签")):
+        return "blocks"
+    return "freeform"
+
+
+def _string_or_empty(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _string_or_none(value: Any) -> str | None:
+    value = value.strip() if isinstance(value, str) else ""
+    return value or None

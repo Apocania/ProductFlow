@@ -6,6 +6,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from productflow_backend.application.contracts import LegacyCopyFields
+from productflow_backend.application.copy_payloads import (
+    copy_payload_to_legacy_fields,
+    copy_payload_to_output,
+    legacy_copy_fields_to_payload,
+)
 from productflow_backend.application.product_workflow_context import optional_config_text
 from productflow_backend.application.time import now_utc
 from productflow_backend.domain.enums import (
@@ -57,6 +63,15 @@ def create_context_copy_set(
     headline = instruction or product_name
     title = product_name
     cta = ""
+    structured_payload = legacy_copy_fields_to_payload(
+        LegacyCopyFields(
+            title=title,
+            selling_points=selling_points,
+            poster_headline=headline[:500],
+            cta=cta,
+        ),
+        purpose="workflow_context",
+    )
     copy_set = CopySet(
         product_id=product.id,
         creative_brief_id=None,
@@ -65,10 +80,12 @@ def create_context_copy_set(
         selling_points=selling_points,
         poster_headline=headline[:500],
         cta=cta,
+        structured_payload=structured_payload.model_dump(mode="json"),
         model_title=title,
         model_selling_points=selling_points,
         model_poster_headline=headline[:500],
         model_cta=cta,
+        model_structured_payload=structured_payload.model_dump(mode="json"),
         provider_name="workflow_context",
         model_name="product_context",
         prompt_version="v1",
@@ -111,14 +128,24 @@ def copy_node_output(
     creative_brief_id: str | None,
     manual_edit: bool = False,
 ) -> dict[str, Any]:
+    if isinstance(copy_set.structured_payload, dict):
+        from productflow_backend.application.copy_payloads import normalize_copy_payload
+
+        structured_payload = normalize_copy_payload(copy_set.structured_payload)
+    else:
+        structured_payload = legacy_copy_fields_to_payload(
+            LegacyCopyFields(
+                title=copy_set.title,
+                selling_points=copy_set.selling_points or [],
+                poster_headline=copy_set.poster_headline,
+                cta=copy_set.cta,
+            )
+        )
+    legacy = copy_payload_to_legacy_fields(structured_payload)
     output: dict[str, Any] = {
         "copy_set_id": copy_set.id,
         "creative_brief_id": creative_brief_id,
-        "title": copy_set.title,
-        "poster_headline": copy_set.poster_headline,
-        "selling_points": copy_set.selling_points,
-        "cta": copy_set.cta,
-        "summary": f"文案：{copy_set.poster_headline}",
+        **copy_payload_to_output(structured_payload, legacy),
     }
     if manual_edit:
         output["manual_edit"] = True

@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from productflow_backend.application.copy_payloads import copy_set_structured_payload
 from productflow_backend.application.use_cases import derive_product_state
 from productflow_backend.domain.enums import (
     CopyStatus,
@@ -52,10 +53,12 @@ class CopySetResponse(BaseModel):
     selling_points: list[str]
     poster_headline: str
     cta: str
+    structured_payload: dict[str, Any]
     model_title: str
     model_selling_points: list[str]
     model_poster_headline: str
     model_cta: str
+    model_structured_payload: dict[str, Any] | None = None
     provider_name: str
     model_name: str
     prompt_version: str
@@ -164,10 +167,12 @@ def serialize_copy_set(copy_set: CopySet) -> CopySetResponse:
         selling_points=copy_set.selling_points,
         poster_headline=copy_set.poster_headline,
         cta=copy_set.cta,
+        structured_payload=copy_set_structured_payload(copy_set).model_dump(mode="json"),
         model_title=copy_set.model_title,
         model_selling_points=copy_set.model_selling_points,
         model_poster_headline=copy_set.model_poster_headline,
         model_cta=copy_set.model_cta,
+        model_structured_payload=copy_set.model_structured_payload,
         provider_name=copy_set.provider_name,
         model_name=copy_set.model_name,
         prompt_version=copy_set.prompt_version,

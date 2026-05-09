@@ -105,7 +105,7 @@ Workflow node semantics for users:
 
 - `product_context`: product information entrypoint for one product workflow.
 - `reference_image`: a single current reference image slot; manual upload or upstream image generation replaces the current image, while old assets remain in product history/assets.
-- `copy_generation`: copy generation and editable copy fields.
+- `copy_generation`: copy generation and editable structured copy; the legacy four copy fields are retained as derived compatibility fields.
 - `image_generation`: image-generation trigger/configuration node; image artifacts are written into downstream reference image nodes instead of being displayed on the image-generation node itself.
 
 Canvas template boundaries:
@@ -151,7 +151,7 @@ ProductFlow separates model capabilities by modality.
 Text providers live under `infrastructure/text/` with a unified interface:
 
 - `generate_brief(product_input)`
-- `generate_copy(brief, product_input)`
+- `generate_copy(product_input, brief, config, reference_images=None)`
 
 Current implementations:
 
