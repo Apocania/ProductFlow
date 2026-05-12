@@ -894,6 +894,162 @@ def test_image_session_worker_auto_retry_caps_and_uses_generic_safe_reason(
     assert calls["count"] == IMAGE_SESSION_GENERATION_MAX_ATTEMPTS
 
 
+def test_image_session_worker_auto_retry_exposes_last_failure_metadata(
+    configured_env: Path,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from productflow_backend.application.image_sessions import (
+        IMAGE_SESSION_GENERATION_MAX_ATTEMPTS,
+        create_image_session,
+        create_image_session_generation_task,
+        execute_image_session_generation_task,
+    )
+    from productflow_backend.domain.enums import JobStatus
+
+    sent: list[str] = []
+
+    def fail_generate(*args, **kwargs) -> None:
+        raise TimeoutError("read timeout from provider")
+
+    monkeypatch.setattr(
+        "productflow_backend.infrastructure.image.chat_service.ImageChatService.generate",
+        fail_generate,
+    )
+    monkeypatch.setattr(
+        "productflow_backend.application.image_sessions.enqueue_image_session_generation_task",
+        lambda task_id: sent.append(task_id),
+    )
+
+    image_session = create_image_session(db_session, product_id=None, title="自动重试元数据")
+    result = create_image_session_generation_task(
+        db_session,
+        image_session_id=image_session.id,
+        prompt="第一次超时后排队重试",
+        size="1024x1024",
+    )
+
+    execute_image_session_generation_task(result.task.id)
+
+    db_session.expire_all()
+    task = db_session.get(ImageSessionGenerationTask, result.task.id)
+    assert task is not None
+    assert task.status == JobStatus.QUEUED
+    assert task.failure_reason is None
+    assert task.progress_phase == "auto_retry_queued"
+    assert task.progress_metadata == {
+        "last_failure_reason": "图片供应商请求超时，请稍后重试",
+        "last_failure_category": "timeout",
+        "last_failure_retryable": True,
+        "retry_hint": "retry_later",
+        "auto_retry_attempt": 1,
+        "max_attempts": IMAGE_SESSION_GENERATION_MAX_ATTEMPTS,
+    }
+    assert task.is_retryable is True
+    assert task.attempts == 1
+    assert sent == [result.task.id]
+
+
+def test_image_session_worker_non_retryable_policy_failure_stops_without_auto_retry(
+    configured_env: Path,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from productflow_backend.application.image_sessions import (
+        create_image_session,
+        create_image_session_generation_task,
+    )
+    from productflow_backend.domain.enums import JobStatus
+    from productflow_backend.presentation.api import create_app
+
+    sent: list[str] = []
+
+    def fail_generate(*args, **kwargs) -> None:
+        raise RuntimeError("Request blocked by content policy")
+
+    monkeypatch.setattr(
+        "productflow_backend.infrastructure.image.chat_service.ImageChatService.generate",
+        fail_generate,
+    )
+    image_session = create_image_session(db_session, product_id=None, title="策略拒绝")
+    result = create_image_session_generation_task(
+        db_session,
+        image_session_id=image_session.id,
+        prompt="策略拒绝不自动重试",
+        size="1024x1024",
+    )
+    monkeypatch.setattr(
+        "productflow_backend.application.image_sessions.enqueue_image_session_generation_task",
+        lambda task_id: sent.append(task_id),
+    )
+
+    from productflow_backend.application.image_sessions import execute_image_session_generation_task
+
+    execute_image_session_generation_task(result.task.id)
+
+    db_session.expire_all()
+    task = db_session.get(ImageSessionGenerationTask, result.task.id)
+    assert task is not None
+    assert task.status == JobStatus.FAILED
+    assert task.failure_reason == "图片供应商拒绝了本次内容或安全策略，请调整提示词或参考图后重试"
+    assert task.is_retryable is False
+    assert task.attempts == 1
+    assert sent == []
+
+    app = create_app()
+    client = TestClient(app)
+    _login(client)
+    retried = client.post(f"/api/image-sessions/{image_session.id}/generation-tasks/{task.id}/retry")
+    assert retried.status_code == 400
+    assert retried.json()["detail"] == "该生成任务不可重试"
+
+
+def test_image_session_worker_non_retryable_parameter_failure_stops_without_auto_retry(
+    configured_env: Path,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from productflow_backend.application.image_sessions import (
+        create_image_session,
+        create_image_session_generation_task,
+        execute_image_session_generation_task,
+    )
+    from productflow_backend.domain.enums import JobStatus
+
+    sent: list[str] = []
+
+    def fail_generate(*args, **kwargs) -> None:
+        raise RuntimeError("unknown parameter: background")
+
+    monkeypatch.setattr(
+        "productflow_backend.infrastructure.image.chat_service.ImageChatService.generate",
+        fail_generate,
+    )
+    monkeypatch.setattr(
+        "productflow_backend.application.image_sessions.enqueue_image_session_generation_task",
+        lambda task_id: sent.append(task_id),
+    )
+
+    image_session = create_image_session(db_session, product_id=None, title="参数拒绝")
+    result = create_image_session_generation_task(
+        db_session,
+        image_session_id=image_session.id,
+        prompt="参数不支持不自动重试",
+        size="1024x1024",
+    )
+
+    execute_image_session_generation_task(result.task.id)
+
+    db_session.expire_all()
+    task = db_session.get(ImageSessionGenerationTask, result.task.id)
+    assert task is not None
+    assert task.status == JobStatus.FAILED
+    assert task.failure_reason == "图片供应商参数不支持，请检查尺寸、模型或高级参数后重试"
+    assert task.is_retryable is False
+    assert task.attempts == 1
+    assert sent == []
+
+
 def test_image_session_worker_exposes_safe_provider_failure_detail(
     configured_env: Path,
     db_session,

@@ -307,13 +307,20 @@ file paths, or tracebacks must fall back to the generic queue/provider failure d
 - Worker-owned failed/timeout tasks use application-level retry instead of Dramatiq actor retries:
   - `workers.run_image_session_generation_task` must keep `max_retries=0`.
   - each worker claim increments `ImageSessionGenerationTask.attempts`.
-  - while `attempts` is below the application cap, failure resets the same task to `queued` and re-enqueues it.
-  - after the cap is reached, the task becomes `failed`, sets `finished_at`, and remains `is_retryable=true` so the
+  - retryable failures while `attempts` is below the application cap reset the same task to `queued`, set
+    `progress_phase="auto_retry_queued"`, preserve the latest safe failure snapshot in `progress_metadata`, and
+    re-enqueue the task.
+  - retryable failures after the cap is reached become `failed`, set `finished_at`, and remain `is_retryable=true` so the
     owning image session can expose a manual retry action.
+  - non-retryable provider rejections become `failed` immediately, set `finished_at`, and set `is_retryable=false`. This
+    includes content-policy/safety refusals, unsupported or invalid provider parameters, and explicit request rejections.
   - a sanitized safe detail, generic detail, or partial-success `failure_reason` is stored only on the terminal failed
     state.
   - `completed_candidates` and `result_generation_group_id` must be preserved when at least one candidate was already
     persisted.
+- Auto-retry progress metadata is optional and backend-owned. Current keys include `last_failure_reason`,
+  `last_failure_category`, `last_failure_retryable`, `retry_hint`, `auto_retry_attempt`, and `max_attempts`. Serializers
+  pass it through so the frontend can show the last safe failure while the task is queued for automatic retry.
 - `KeyboardInterrupt` and `SystemExit` must still propagate. Other `BaseException` subclasses raised by Dramatiq time
   limits should be converted into durable task failure state before returning.
 
@@ -329,6 +336,14 @@ file paths, or tracebacks must fall back to the generic queue/provider failure d
   not auto-requeue, because the worker's in-flight provider state is unknown.
 - Timeout or safe worker exception before any candidate is committed -> task `failed`, no rounds/assets, sanitized safe
   detail or generic `"图片生成失败，请稍后重试"` only after the automatic retry cap is reached.
+- Retryable provider/network failure before the retry cap -> task returns to `queued`, `failure_reason = null`,
+  `progress_phase = "auto_retry_queued"`, and `progress_metadata.last_failure_reason` contains the safe user-facing
+  reason.
+- Content-policy/safety refusal -> task `failed`, `is_retryable = false`, no automatic retry, and manual retry endpoint
+  returns `400` with `"该生成任务不可重试"`.
+- Unsupported provider parameter or actionable unsupported dimension -> task `failed`, `is_retryable = false`, no
+  automatic retry. Safe dimension details such as `"image2 不支持 64x64，最小尺寸为 512x512"` may keep the
+  `图片生成失败：...` prefix.
 - Queued task consumed while global running capacity is full -> task remains `queued`, `attempts` stays unchanged,
   provider is not called, progress phase becomes a waiting-for-capacity state, and the task is re-enqueued with delay.
 - Partial failure after candidate 1 of 2 -> automatic retry preserves the existing generation group and resumes at
@@ -362,6 +377,10 @@ file paths, or tracebacks must fall back to the generic queue/provider failure d
   resumes at the remaining candidate, and does not duplicate the saved candidate.
 - Worker test: repeated provider failure stops at the application retry cap, marks the task `failed`, exposes either the
   sanitized safe detail or generic safe reason as appropriate, and leaves `is_retryable=true`.
+- Worker test: retryable failure before the retry cap exposes `progress_metadata.last_failure_reason` while the task is
+  queued for automatic retry.
+- Worker test: content-policy and unsupported-parameter failures stop immediately with `is_retryable=false` and do not
+  enqueue an automatic retry.
 - Worker test: wrapped provider exceptions still inspect the exception chain so rate limits, content-policy refusals,
   connection interruptions, provider 5xx errors, and unsupported-parameter failures do not collapse into the outer generic
   request-failure text.

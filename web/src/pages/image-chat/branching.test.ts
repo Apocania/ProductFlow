@@ -8,7 +8,9 @@ import {
   findImageGenerationTaskPlaceholderRound,
   findImageHistoryPlaceholder,
   groupImageSessionRounds,
+  imageGenerationRetryMetadata,
   isImageSessionGenerationTaskActive,
+  isImageSessionGenerationTaskAutoRetrying,
   isImageSessionGenerationTaskRetryable,
   mergeImageSessionStatusIntoDetail,
   reconcileImageSessionSelection,
@@ -504,6 +506,32 @@ describe("image chat branching helpers", () => {
     expect(isImageSessionGenerationTaskRetryable(task({ status: "queued", is_retryable: true }))).toBe(false);
   });
 
+  it("detects active auto retry tasks and parses retry metadata", () => {
+    const retryingTask = task({
+      status: "queued",
+      progress_phase: "auto_retry_queued",
+      progress_metadata: {
+        last_failure_reason: "图片供应商请求超时，请稍后重试",
+        last_failure_category: "timeout",
+        last_failure_retryable: true,
+        retry_hint: "retry_later",
+        auto_retry_attempt: 1,
+        max_attempts: 3,
+      },
+    });
+
+    expect(isImageSessionGenerationTaskAutoRetrying(retryingTask)).toBe(true);
+    expect(imageGenerationRetryMetadata(retryingTask)).toEqual({
+      last_failure_reason: "图片供应商请求超时，请稍后重试",
+      last_failure_category: "timeout",
+      last_failure_retryable: true,
+      retry_hint: "retry_later",
+      auto_retry_attempt: 1,
+      max_attempts: 3,
+    });
+    expect(isImageSessionGenerationTaskAutoRetrying(task({ status: "running", progress_phase: "auto_retry_queued" }))).toBe(false);
+  });
+
   it("merges lightweight session status into cached detail without replacing rounds and assets", () => {
     const cached = detail({
       title: "旧标题",
@@ -516,7 +544,15 @@ describe("image chat branching helpers", () => {
       cached,
       status({
         title: "新标题",
-        generation_tasks: [task({ id: "task-1", status: "running", queue_running_count: 1 })],
+        generation_tasks: [
+          task({
+            id: "task-1",
+            status: "queued",
+            progress_phase: "auto_retry_queued",
+            progress_metadata: { last_failure_reason: "timeout", auto_retry_attempt: 1, max_attempts: 3 },
+            queue_running_count: 1,
+          }),
+        ],
         updated_at: "2026-04-27T00:00:10Z",
       }),
     );
@@ -524,7 +560,12 @@ describe("image chat branching helpers", () => {
     expect(merged.title).toBe("新标题");
     expect(merged.assets).toBe(cached.assets);
     expect(merged.rounds).toBe(cached.rounds);
-    expect(merged.generation_tasks[0].status).toBe("running");
+    expect(merged.generation_tasks[0].status).toBe("queued");
+    expect(merged.generation_tasks[0].progress_metadata).toEqual({
+      last_failure_reason: "timeout",
+      auto_retry_attempt: 1,
+      max_attempts: 3,
+    });
     expect(merged.updated_at).toBe("2026-04-27T00:00:10Z");
   });
 

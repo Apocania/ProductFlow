@@ -57,7 +57,9 @@ import {
   clampGenerationCount,
   compactImageToolOptions,
   findImageHistoryPlaceholder,
+  imageGenerationRetryMetadata,
   isImageSessionGenerationTaskActive,
+  isImageSessionGenerationTaskAutoRetrying,
   isImageSessionGenerationTaskCancelable,
   isImageSessionGenerationTaskRetryable,
   mergeImageSessionStatusIntoDetail,
@@ -123,6 +125,14 @@ function getSessionReferenceAssets(imageSession: ImageSessionDetail | undefined)
 }
 
 function generationTaskQueueText(task: ImageSessionGenerationTask, t: ReturnType<typeof useI18n>["t"]) {
+  const retryMetadata = imageGenerationRetryMetadata(task);
+  if (isImageSessionGenerationTaskAutoRetrying(task) && retryMetadata?.auto_retry_attempt && retryMetadata.max_attempts) {
+    return t("chat.autoRetryText", {
+      attempt: Math.min(retryMetadata.auto_retry_attempt + 1, retryMetadata.max_attempts),
+      max: retryMetadata.max_attempts,
+      reason: retryMetadata.last_failure_reason ?? t("chat.autoRetryGenericReason"),
+    });
+  }
   if (task.status === "queued") {
     const ahead = task.queued_ahead_count ?? 0;
     const position = task.queue_position
@@ -157,6 +167,17 @@ function imageRoundSizeLabel(round: ImageSessionRound, t: ReturnType<typeof useI
 }
 
 function placeholderStatusLabel(candidate: ImageHistoryPlaceholderCandidate, t: ReturnType<typeof useI18n>["t"]) {
+  const retryMetadata = imageGenerationRetryMetadata(candidate.task);
+  if (
+    isImageSessionGenerationTaskAutoRetrying(candidate.task) &&
+    retryMetadata?.auto_retry_attempt &&
+    retryMetadata.max_attempts
+  ) {
+    return t("chat.statusAutoRetry", {
+      attempt: Math.min(retryMetadata.auto_retry_attempt + 1, retryMetadata.max_attempts),
+      max: retryMetadata.max_attempts,
+    });
+  }
   if (candidate.status === "queued") {
     return candidate.task.queue_position
       ? t("chat.statusQueuedPosition", { position: candidate.task.queue_position })
@@ -1375,6 +1396,8 @@ function GenerationCanvasPlaceholder({
   const cancelled = candidate.status === "cancelled";
   const retryable = isImageSessionGenerationTaskRetryable(candidate.task);
   const queueText = generationTaskQueueText(candidate.task, t);
+  const retryMetadata = imageGenerationRetryMetadata(candidate.task);
+  const nonRetryableReason = candidate.failure_reason ?? retryMetadata?.last_failure_reason;
 
   return (
     <div className="relative z-0 flex h-full min-h-0 w-full items-center justify-center px-6 pb-6 pt-16">
@@ -1419,8 +1442,9 @@ function GenerationCanvasPlaceholder({
             {t("chat.retryGeneration")}
           </button>
         ) : failed ? (
-          <div className="mt-5 rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-500 dark:border-red-400/40 dark:bg-[#0b1220] dark:text-red-200">
-            {t("chat.notRetryable")}
+          <div className="mt-5 max-w-sm rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-medium leading-5 text-red-500 dark:border-red-400/40 dark:bg-[#0b1220] dark:text-red-200">
+            <div>{t("chat.notRetryable")}</div>
+            {nonRetryableReason ? <div className="mt-1 text-red-500/80 dark:text-red-100/80">{nonRetryableReason}</div> : null}
           </div>
         ) : cancelled ? (
           <div className="mt-5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-500">

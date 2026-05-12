@@ -313,6 +313,7 @@ def execute_product_workflow_run(
                 run_id=run_id,
                 failed_node_id=None,
                 reason=safe_workflow_failure_reason(exc)[:1000],
+                is_retryable=getattr(exc, "retryable", True),
             )
         except Exception as exc:  # noqa: BLE001
             session.rollback()
@@ -321,6 +322,7 @@ def execute_product_workflow_run(
                 run_id=run_id,
                 failed_node_id=None,
                 reason=safe_workflow_failure_reason(exc)[:1000],
+                is_retryable=getattr(exc, "retryable", True),
             )
     finally:
         session.close()
@@ -397,6 +399,7 @@ def _execute_product_workflow_run(
                 run_id=run_id,
                 failed_node_id=ordered_node.id,
                 reason=safe_workflow_failure_reason(exc)[:1000],
+                is_retryable=getattr(exc, "retryable", True),
             )
             return
         except Exception as exc:  # noqa: BLE001
@@ -406,6 +409,7 @@ def _execute_product_workflow_run(
                 run_id=run_id,
                 failed_node_id=ordered_node.id,
                 reason=safe_workflow_failure_reason(exc)[:1000],
+                is_retryable=getattr(exc, "retryable", True),
             )
             return
 

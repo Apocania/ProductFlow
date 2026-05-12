@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from productflow_backend.application.contracts import PosterGenerationInput
 from productflow_backend.application.copy_payloads import copy_payload_context_text, normalize_copy_payload
 from productflow_backend.application.image_generation_core import build_stored_image_reference_payload
-from productflow_backend.application.image_generation_failures import safe_image_generation_failure_reason
+from productflow_backend.application.image_generation_failures import classify_image_generation_failure
 from productflow_backend.application.product_workflow.artifacts import (
     GeneratedWorkflowImage,
     create_context_copy_set,
@@ -268,9 +268,8 @@ def generate_workflow_images_concurrently(
                     render_input.copy_prompt_mode,
                     type(exc).__name__,
                 )
-                raise WorkflowImageGenerationProviderError(
-                    safe_image_generation_failure_reason(exc, generic_message=WORKFLOW_IMAGE_GENERATION_FAILURE)
-                ) from exc
+                decision = classify_image_generation_failure(exc, generic_message=WORKFLOW_IMAGE_GENERATION_FAILURE)
+                raise WorkflowImageGenerationProviderError(decision.reason, retryable=decision.retryable) from exc
             return GeneratedWorkflowImage(
                 target_index=target_index,
                 content=generated_image.bytes_data,

@@ -53,6 +53,13 @@ def test_sqlalchemy_enum_columns_use_database_values() -> None:
     assert WorkflowRun.__table__.c.status.type.enums == [member.value for member in WorkflowRunStatus]
 
 
+def test_workflow_run_model_has_retryability_default() -> None:
+    table = WorkflowRun.__table__
+    assert "is_retryable" in table.c
+    assert not table.c.is_retryable.nullable
+    assert table.c.is_retryable.default is not None
+
+
 def test_gallery_entry_model_matches_migration_contract() -> None:
     table = ImageGalleryEntry.__table__
     assert table.c.id.type.length == 36
@@ -251,6 +258,70 @@ def test_legacy_copy_fields_migrate_to_structured_payload_and_drop_columns(
     assert json.loads(row[MODEL_LEGACY_COPY_COLUMNS[1]]) == ["模型卖点"]
     assert row[MODEL_LEGACY_COPY_COLUMNS[2]] == "模型海报标题"
     assert row[MODEL_LEGACY_COPY_COLUMNS[3]] == "模型 CTA"
+    engine.dispose()
+    get_settings.cache_clear()
+
+
+def test_workflow_run_retryability_migration_supports_sqlite(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "workflow-run-retryability.db"
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("ADMIN_ACCESS_KEY", "super-secret-admin-key")
+    monkeypatch.setenv("SESSION_SECRET", "super-secret-session-key-123")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/9")
+    monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
+    get_settings.cache_clear()
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    command.upgrade(config, "20260510_0024")
+
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    now = "2026-05-12 00:00:00"
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO products (id, name, created_at, updated_at) "
+                "VALUES ('product-1', '重试迁移商品', :now, :now)"
+            ),
+            {"now": now},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO product_workflows (id, product_id, title, active, created_at, updated_at) "
+                "VALUES ('workflow-1', 'product-1', '迁移工作流', 1, :now, :now)"
+            ),
+            {"now": now},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_runs (id, workflow_id, status, started_at) "
+                "VALUES ('run-1', 'workflow-1', 'failed', :now)"
+            ),
+            {"now": now},
+        )
+
+    engine.dispose()
+    command.upgrade(config, "head")
+
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    inspector = sa.inspect(engine)
+    columns = {column["name"]: column for column in inspector.get_columns("workflow_runs")}
+    assert columns["is_retryable"]["nullable"] is False
+    with engine.connect() as connection:
+        retryable = connection.execute(
+            sa.text("SELECT is_retryable FROM workflow_runs WHERE id = 'run-1'")
+        ).scalar_one()
+    assert bool(retryable) is True
+
+    engine.dispose()
+    command.downgrade(config, "20260510_0024")
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    inspector = sa.inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("workflow_runs")}
+    assert "is_retryable" not in columns
+
     engine.dispose()
     get_settings.cache_clear()
 

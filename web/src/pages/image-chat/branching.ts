@@ -78,6 +78,15 @@ export interface ImageGenerationSubmitGuard {
   submittedAt: number;
 }
 
+export interface ImageGenerationRetryMetadata {
+  last_failure_reason?: string;
+  last_failure_category?: string;
+  last_failure_retryable?: boolean;
+  retry_hint?: "retry_later" | "revise_input" | "check_settings";
+  auto_retry_attempt?: number;
+  max_attempts?: number;
+}
+
 export interface ImageSessionSelectionState {
   selectedGeneratedAssetId: string | null;
   selectedTaskPlaceholderId: string | null;
@@ -521,6 +530,41 @@ export function isImageSessionGenerationTaskActive(task: ImageSessionGenerationT
 
 export function isImageSessionGenerationTaskRetryable(task: ImageSessionGenerationTask): boolean {
   return task.status === "failed" && task.is_retryable;
+}
+
+export function imageGenerationRetryMetadata(task: ImageSessionGenerationTask): ImageGenerationRetryMetadata | null {
+  const metadata = task.progress_metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+  const output: ImageGenerationRetryMetadata = {};
+  if (typeof metadata.last_failure_reason === "string" && metadata.last_failure_reason.trim()) {
+    output.last_failure_reason = metadata.last_failure_reason;
+  }
+  if (typeof metadata.last_failure_category === "string" && metadata.last_failure_category.trim()) {
+    output.last_failure_category = metadata.last_failure_category;
+  }
+  if (typeof metadata.last_failure_retryable === "boolean") {
+    output.last_failure_retryable = metadata.last_failure_retryable;
+  }
+  if (
+    metadata.retry_hint === "retry_later" ||
+    metadata.retry_hint === "revise_input" ||
+    metadata.retry_hint === "check_settings"
+  ) {
+    output.retry_hint = metadata.retry_hint;
+  }
+  if (typeof metadata.auto_retry_attempt === "number" && Number.isFinite(metadata.auto_retry_attempt)) {
+    output.auto_retry_attempt = metadata.auto_retry_attempt;
+  }
+  if (typeof metadata.max_attempts === "number" && Number.isFinite(metadata.max_attempts)) {
+    output.max_attempts = metadata.max_attempts;
+  }
+  return Object.keys(output).length ? output : null;
+}
+
+export function isImageSessionGenerationTaskAutoRetrying(task: ImageSessionGenerationTask): boolean {
+  return task.status === "queued" && task.progress_phase === "auto_retry_queued";
 }
 
 export function isImageSessionGenerationTaskCancelable(task: ImageSessionGenerationTask): boolean {

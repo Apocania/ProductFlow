@@ -26,7 +26,10 @@ from productflow_backend.application.image_generation_core import (
     provider_output_with_actual_image_size,
     unique_image_generation_ids,
 )
-from productflow_backend.application.image_generation_failures import safe_image_generation_failure_reason
+from productflow_backend.application.image_generation_failures import (
+    ImageGenerationFailureDecision,
+    classify_image_generation_failure,
+)
 from productflow_backend.application.queue_submission import enqueue_or_mark_failed
 from productflow_backend.application.time import now_utc
 from productflow_backend.config import normalize_image_generation_size
@@ -103,6 +106,7 @@ class ImageSessionGenerationExecutionError(Exception):
     generation_group_id: str | None
     timed_out: bool = False
     safe_reason: str | None = None
+    failure_decision: ImageGenerationFailureDecision | None = None
 
 
 class ImageSessionGenerationCancelledError(Exception):
@@ -664,16 +668,18 @@ def _execute_image_session_round_generation(
                 raise
             if generation_task_id is None:
                 raise
+            failure_decision = (
+                None
+                if str(exc) == PROVIDER_TEXT_OUTPUT_MESSAGE
+                else classify_image_generation_failure(exc, generic_message=GENERIC_IMAGE_GENERATION_FAILURE)
+            )
             raise ImageSessionGenerationExecutionError(
                 completed_candidates=completed_candidates,
                 requested_candidates=generation_count,
                 generation_group_id=generation_group_id if completed_candidates else None,
                 timed_out=isinstance(exc, TimeLimitExceeded),
-                safe_reason=(
-                    str(exc)
-                    if str(exc) == PROVIDER_TEXT_OUTPUT_MESSAGE
-                    else safe_image_generation_failure_reason(exc, generic_message=GENERIC_IMAGE_GENERATION_FAILURE)
-                ),
+                safe_reason=str(exc) if str(exc) == PROVIDER_TEXT_OUTPUT_MESSAGE else failure_decision.reason,
+                failure_decision=failure_decision,
             ) from exc
     session.expire_all()
     return ImageSessionRoundGenerationResult(
@@ -898,6 +904,7 @@ def _reset_image_generation_task_for_retry(
     task: ImageSessionGenerationTask,
     progress_phase: str,
     result_generation_group_id: str | None = None,
+    progress_metadata: dict[str, Any] | None = None,
 ) -> None:
     now = now_utc()
     task.status = JobStatus.QUEUED
@@ -909,7 +916,7 @@ def _reset_image_generation_task_for_retry(
     task.progress_updated_at = now
     task.provider_response_id = None
     task.provider_response_status = None
-    task.progress_metadata = None
+    task.progress_metadata = progress_metadata
     task.is_retryable = True
     if result_generation_group_id is not None:
         task.result_generation_group_id = result_generation_group_id
@@ -1104,6 +1111,7 @@ def _handle_image_generation_task_failure(
     task_id: str,
     reason: str,
     result_generation_group_id: str | None = None,
+    failure_decision: ImageGenerationFailureDecision | None = None,
 ) -> None:
     task = session.get(ImageSessionGenerationTask, task_id)
     if task is None:
@@ -1111,12 +1119,31 @@ def _handle_image_generation_task_failure(
     session.refresh(task, attribute_names=["status"])
     if IMAGE_SESSION_GENERATION_TASK_CONTRACT.is_terminal(task.status):
         return
+    retryable = failure_decision.retryable if failure_decision is not None else True
+    if not retryable:
+        _finish_image_generation_task(
+            session,
+            task=task,
+            status=JobStatus.FAILED,
+            failure_reason=reason,
+            result_generation_group_id=result_generation_group_id,
+            is_retryable=False,
+        )
+        return
     if task.attempts < IMAGE_SESSION_GENERATION_MAX_ATTEMPTS:
         _reset_image_generation_task_for_retry(
             session,
             task=task,
             progress_phase="auto_retry_queued",
             result_generation_group_id=result_generation_group_id,
+            progress_metadata={
+                "last_failure_reason": reason,
+                "last_failure_category": failure_decision.category if failure_decision is not None else "unknown",
+                "last_failure_retryable": True,
+                "retry_hint": failure_decision.retry_hint if failure_decision is not None else "retry_later",
+                "auto_retry_attempt": task.attempts,
+                "max_attempts": IMAGE_SESSION_GENERATION_MAX_ATTEMPTS,
+            },
         )
         try:
             enqueue_image_session_generation_task(task.id)
@@ -1150,6 +1177,7 @@ def _handle_image_generation_task_failure_safely(
     task_id: str,
     reason: str,
     result_generation_group_id: str | None = None,
+    failure_decision: ImageGenerationFailureDecision | None = None,
 ) -> None:
     try:
         _handle_image_generation_task_failure(
@@ -1157,6 +1185,7 @@ def _handle_image_generation_task_failure_safely(
             task_id=task_id,
             reason=reason,
             result_generation_group_id=result_generation_group_id,
+            failure_decision=failure_decision,
         )
     except StaleDataError:
         session.rollback()
@@ -1165,6 +1194,7 @@ def _handle_image_generation_task_failure_safely(
             task_id=task_id,
             reason=reason,
             result_generation_group_id=result_generation_group_id,
+            failure_decision=failure_decision,
         )
 
 
@@ -1209,7 +1239,8 @@ def execute_image_session_generation_task(task_id: str) -> None:
                     task_id=task.id,
                     reason=reason,
                     result_generation_group_id=exc.generation_group_id,
-            )
+                    failure_decision=exc.failure_decision,
+                )
             return
         except ImageSessionGenerationCancelledError:
             session.rollback()
@@ -1222,6 +1253,10 @@ def execute_image_session_generation_task(task_id: str) -> None:
                 session,
                 task_id=task_id,
                 reason=GENERIC_IMAGE_GENERATION_FAILURE,
+                failure_decision=classify_image_generation_failure(
+                    exc,
+                    generic_message=GENERIC_IMAGE_GENERATION_FAILURE,
+                ),
             )
             return
     finally:

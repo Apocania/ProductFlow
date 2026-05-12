@@ -143,6 +143,11 @@ export function RunsPanel({ workflow, latestRun, busyRunId, onRetryRun }: RunsPa
                           {run.failure_reason}
                         </div>
                       ) : null}
+                      {run.status === "failed" && !run.is_retryable ? (
+                        <div className="mt-2 inline-flex rounded-lg border border-red-100 bg-white px-2.5 py-1 text-[11px] font-medium text-red-600 dark:border-red-400/35 dark:bg-[#0b1220] dark:text-red-200">
+                          {t("detail.notRetryable")}
+                        </div>
+                      ) : null}
                       {queueText ? <div className="mt-2 text-[11px] leading-5 text-zinc-500 dark:text-slate-400">{queueText}</div> : null}
                     </div>
                   </div>

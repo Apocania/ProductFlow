@@ -265,7 +265,7 @@ class RunWorkflowRequest(BaseModel):
 
 
 def workflow_run_is_retryable(run: WorkflowRun) -> bool:
-    return run.status == WorkflowRunStatus.FAILED
+    return run.status == WorkflowRunStatus.FAILED and run.is_retryable
 
 
 def workflow_run_is_cancelable(run: WorkflowRun) -> bool:

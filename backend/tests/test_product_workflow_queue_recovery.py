@@ -82,6 +82,14 @@ class _RateLimitedWorkflowImageProvider:
         raise wrapped from cause
 
 
+class _PolicyRejectedWorkflowImageProvider:
+    provider_name = "policy-rejected-test"
+    prompt_version = "policy-rejected-test-v1"
+
+    def generate_poster_image(self, *args, **kwargs):
+        raise RuntimeError("Request blocked by content policy")
+
+
 def test_workflow_run_kickoff_reuses_overlapping_active_node_runs(db_session, configured_env: Path) -> None:
     from productflow_backend.application.product_workflows import delete_workflow_node, start_product_workflow_run
 
@@ -833,6 +841,49 @@ def test_workflow_image_generation_provider_failure_categorizes_wrapped_rate_lim
     assert run is not None
     assert run.status == WorkflowRunStatus.FAILED
     assert run.failure_reason == "图片供应商限流或配额不足，请稍后重试或降低并发后再试"
+    assert run.is_retryable is True
+
+
+def test_workflow_image_generation_policy_reject_is_not_retryable(
+    db_session,
+    configured_env: Path,
+) -> None:
+    from productflow_backend.application.product_workflow_dependencies import WorkflowExecutionDependencies
+    from productflow_backend.application.product_workflows import run_product_workflow
+
+    db_session.add(AppSetting(key="poster_generation_mode", value="generated"))
+    db_session.commit()
+
+    product = create_product(
+        db_session,
+        name="生图策略拒绝商品",
+        category=None,
+        price=None,
+        source_note=None,
+        image_bytes=_make_demo_image_bytes(),
+        filename="workflow-provider-policy-reject.png",
+        content_type="image/png",
+    )
+
+    workflow = run_product_workflow(
+        db_session,
+        product_id=product.id,
+        dependencies=WorkflowExecutionDependencies(
+            image_provider_resolver=lambda: _PolicyRejectedWorkflowImageProvider(),
+        ),
+    )
+    db_session.expire_all()
+
+    run = (
+        db_session.query(WorkflowRun)
+        .filter_by(workflow_id=workflow.id)
+        .order_by(WorkflowRun.started_at.desc())
+        .first()
+    )
+    assert run is not None
+    assert run.status == WorkflowRunStatus.FAILED
+    assert run.failure_reason == "图片供应商拒绝了本次内容或安全策略，请调整提示词或参考图后重试"
+    assert run.is_retryable is False
 
 
 def test_workflow_time_limit_exception_marks_running_node_failed(

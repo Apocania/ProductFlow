@@ -27,9 +27,10 @@ PRODUCT_WORKFLOW_CAPACITY_RETRY_DELAY_MS = 2000
 class WorkflowSafeExecutionError(RuntimeError):
     """Execution failure whose string is safe to persist and show to users."""
 
-    def __init__(self, safe_message: str) -> None:
+    def __init__(self, safe_message: str, *, retryable: bool = True) -> None:
         super().__init__(safe_message)
         self.safe_message = safe_message
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ def mark_workflow_run_failed(
     run_id: str,
     failed_node_id: str | None,
     reason: str,
+    is_retryable: bool = True,
 ) -> None:
     persisted_run = session.get(WorkflowRun, run_id)
     if persisted_run is None:
@@ -126,6 +128,7 @@ def mark_workflow_run_failed(
     logger.warning("工作流运行失败: run_id=%s failed_node_id=%s reason=%s", run_id, failed_node_id, reason)
     persisted_run.status = WorkflowRunStatus.FAILED
     persisted_run.failure_reason = reason
+    persisted_run.is_retryable = is_retryable
     persisted_run.finished_at = now
     persisted_run.workflow.updated_at = now
     session.commit()
